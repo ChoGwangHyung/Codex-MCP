@@ -462,7 +462,16 @@ function printPermissionHookSnippet() {
     'type = "command"',
     `command = ${JSON.stringify(hookCommand)}`,
     "timeout = 330",
-    'statusMessage = "Waiting for Telegram approval"'
+    'statusMessage = "Waiting for Telegram approval"',
+    "",
+    "[[hooks.PostToolUse]]",
+    'matcher = "*"',
+    "",
+    "[[hooks.PostToolUse.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(hookCommand)}`,
+    "timeout = 30",
+    'statusMessage = "Updating Telegram approval state"'
   ].join("\n"));
 }
 

@@ -79,6 +79,7 @@ CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # CODEX_TELEGRAM_APPROVAL_CHAT_IDS=<chat-id>
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_BEHAVIOR=ask
+# CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED=1
 # CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=1
 ```
 
@@ -279,26 +280,57 @@ type = "command"
 command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
 timeout = 330
 statusMessage = "Waiting for Telegram approval"
+
+[[hooks.PostToolUse]]
+matcher = "*"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
+timeout = 30
+statusMessage = "Updating Telegram approval state"
 ```
 
 If installed globally from npm, use the package binary:
 
 ```toml
+[[hooks.PermissionRequest]]
+matcher = "*"
+
 [[hooks.PermissionRequest.hooks]]
 type = "command"
 command = "codex-telegram-permission-hook"
 timeout = 330
 statusMessage = "Waiting for Telegram approval"
+
+[[hooks.PostToolUse]]
+matcher = "*"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = "codex-telegram-permission-hook"
+timeout = 30
+statusMessage = "Updating Telegram approval state"
 ```
 
 Behavior:
 
-- The hook only runs for Codex `PermissionRequest` events, such as shell
+- The approval prompt runs for Codex `PermissionRequest` events, such as shell
   escalation, managed-network approval, `apply_patch`, and MCP tool approvals.
-- Telegram shows `승인` and `거부` inline buttons. The internal request code is
-  kept in the callback payload and is not shown in the message body.
+- The bundled `PostToolUse` hook updates the Telegram message when a request
+  falls back to the CLI prompt and is later approved there. CLI denial is not
+  observable from current Codex hook events because the tool does not run.
+- Telegram shows `승인`, `항상 승인`, and `거부` inline buttons. The internal
+  request code is kept in the callback payload and is not shown in the message
+  body. Buttons are removed after the first accepted response.
+- `항상 승인` stores a bridge-side approval for the same session, cwd, tool name,
+  and exact tool input signature. It does not modify Codex's global permission
+  configuration. Remove the Telegram runtime state file, or set
+  `CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED=0`, to stop using stored always
+  approvals.
 - Text fallback still accepts approval words such as `approve`, `승인`, `deny`,
-  or `거부` from the same allowlisted chat.
+  or `거부` from the same allowlisted chat. It also accepts `always approve` or
+  `항상 승인` for the same bridge-side always-approval behavior.
 - If `CODEX_TELEGRAM_APPROVAL_CHAT_IDS` is set, requests go only to those
   allowlisted chats. Otherwise, requests go to all allowlisted chats.
 - If Telegram times out, the default behavior is `ask`, which falls back to the
@@ -320,7 +352,8 @@ Codex permissions, call:
 telegram_approval_request
 ```
 
-The helper sends Telegram inline buttons for approve and deny responses.
+The helper sends Telegram inline buttons for approve, always approve, and deny
+responses.
 Use it only in workflows that deliberately call the tool.
 
 ## State Files

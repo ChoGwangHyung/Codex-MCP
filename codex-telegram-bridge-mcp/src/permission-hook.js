@@ -1,5 +1,6 @@
 "use strict";
 
+const crypto = require("node:crypto");
 const {
   DEFAULT_APPROVAL_TIMEOUT_MS
 } = require("./constants.js");
@@ -27,6 +28,7 @@ const {
 } = require("./util.js");
 
 const DEFAULT_POLL_TIMEOUT_SEC = 2;
+const MAX_ALWAYS_APPROVALS = 200;
 
 function permissionDecisionOutput(behavior, message) {
   const decision = { behavior };
@@ -67,14 +69,23 @@ async function handlePermissionHook(input, options = {}) {
     DEFAULT_APPROVAL_TIMEOUT_MS
   );
   const request = buildPermissionApprovalRequest(input);
+  const approvalKey = permissionApprovalKey(input);
+  if (hasAlwaysApproval(approvalKey)) {
+    return permissionDecisionOutput("allow");
+  }
   const result = await requestTelegramPermissionApproval({
     ...request,
     chatIds,
     timeoutMs,
+    approvalKey,
     telegramApiFn: options.telegramApiFn || telegramApi,
     now: options.now || (() => Date.now())
   });
 
+  if (result.decision === "always_approved") {
+    rememberAlwaysApproval(input, result);
+    return permissionDecisionOutput("allow");
+  }
   if (result.decision === "approved") {
     return permissionDecisionOutput("allow");
   }
@@ -83,9 +94,27 @@ async function handlePermissionHook(input, options = {}) {
   }
 
   if (permissionTimeoutBehavior() === "deny") {
+    forgetPendingApproval(approvalKey);
     return permissionDecisionOutput("deny", "Timed out waiting for Telegram approval.");
   }
   return systemMessageOutput("Telegram permission approval timed out; falling back to the normal Codex approval prompt.");
+}
+
+async function handlePostToolUseHook(input, options = {}) {
+  if (!input || input.hook_event_name !== "PostToolUse") {
+    return "";
+  }
+  if (process.env.CODEX_TELEGRAM_CLI_APPROVAL_SYNC_ENABLED === "0") {
+    return "";
+  }
+  if (!bridgeEnabled() || !process.env.TELEGRAM_BOT_TOKEN) {
+    return "";
+  }
+  const approvalKey = permissionApprovalKey(input);
+  const pending = takePendingApproval(approvalKey);
+  if (!pending) return "";
+  await markApprovalHandledByCli(options.telegramApiFn || telegramApi, pending);
+  return "";
 }
 
 function selectApprovalChatIds() {
@@ -149,19 +178,22 @@ async function requestTelegramPermissionApproval({
   title,
   message,
   timeoutMs,
+  approvalKey,
   telegramApiFn,
   now
 }) {
   const code = createApprovalCode();
   const startedAt = now();
   await syncTelegramOffset(telegramApiFn);
-  const sentMessages = await sendApprovalRequest(telegramApiFn, chatIds, { title, message, code });
+  const sentMessages = await sendApprovalRequest(telegramApiFn, chatIds, { title, message, code, approvalKey });
+  rememberPendingApproval({ approvalKey, code, title, message, sentMessages, timeoutMs });
 
   const deadline = now() + timeoutMs;
   while (now() < deadline) {
     const inboxDecision = takeMatchingInboxDecision(chatIds, code, startedAt);
     if (inboxDecision) {
       await sendApprovalResult(telegramApiFn, inboxDecision, sentMessages);
+      forgetPendingApproval(approvalKey);
       return inboxDecision;
     }
 
@@ -170,6 +202,7 @@ async function requestTelegramPermissionApproval({
     const updateDecision = storeUpdatesAndFindDecision(updates, chatIds, code, startedAt);
     if (updateDecision) {
       await sendApprovalResult(telegramApiFn, updateDecision, sentMessages);
+      forgetPendingApproval(approvalKey);
       return updateDecision;
     }
   }
@@ -192,7 +225,7 @@ async function sendApprovalRequest(telegramApiFn, chatIds, request) {
 }
 
 async function sendApprovalResult(telegramApiFn, result, sentMessages) {
-  const text = result.decision === "approved" ? "승인 처리되었습니다." : "거부 처리되었습니다.";
+  const text = approvalResultText(result.decision);
   if (result.callbackQueryId) {
     await answerApprovalCallback(telegramApiFn, result.callbackQueryId, text);
   }
@@ -204,6 +237,11 @@ async function sendApprovalResult(telegramApiFn, result, sentMessages) {
       disable_web_page_preview: true
     }).catch(() => {});
   }
+}
+
+function approvalResultText(decision) {
+  if (decision === "always_approved") return "항상 승인 처리되었습니다.";
+  return decision === "approved" ? "승인 처리되었습니다." : "거부 처리되었습니다.";
 }
 
 async function sendApprovalTimeout(telegramApiFn, chatIds, sentMessages) {
@@ -228,8 +266,28 @@ async function clearApprovalButtons(telegramApiFn, sentMessages) {
     if (!message || !message.chatId || !message.messageId) return Promise.resolve();
     return telegramApiFn("editMessageReplyMarkup", {
       chat_id: message.chatId,
+      message_id: message.messageId
+    }).catch(() => {});
+  }));
+}
+
+async function markApprovalHandledByCli(telegramApiFn, pending) {
+  const text = truncateTelegramText([
+    sanitize(pending.text || approvalRequestText(pending)),
+    "",
+    "처리됨: CLI에서 승인되어 실행되었습니다."
+  ].join("\n"));
+  await Promise.all((pending.sentMessages || []).map(async (message) => {
+    if (!message || !message.chatId || !message.messageId) return;
+    await telegramApiFn("editMessageText", {
+      chat_id: message.chatId,
       message_id: message.messageId,
-      reply_markup: { inline_keyboard: [] }
+      text,
+      disable_web_page_preview: true
+    }).catch(() => {});
+    await telegramApiFn("editMessageReplyMarkup", {
+      chat_id: message.chatId,
+      message_id: message.messageId
     }).catch(() => {});
   }));
 }
@@ -355,6 +413,119 @@ function messageFromUpdate(update) {
   };
 }
 
+function permissionApprovalKey(input) {
+  const signature = {
+    sessionId: singleLine(input && input.session_id || ""),
+    cwd: singleLine(input && input.cwd || ""),
+    toolName: singleLine(input && input.tool_name || "unknown"),
+    toolInput: input && input.tool_input !== undefined ? input.tool_input : null
+  };
+  return crypto.createHash("sha256").update(stableStringify(signature)).digest("hex");
+}
+
+function hasAlwaysApproval(key) {
+  if (!key || process.env.CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED === "0") return false;
+  const state = readTelegramState();
+  const approvals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
+    ? state.permissionAlwaysApprovals
+    : {};
+  return Boolean(approvals[key]);
+}
+
+function rememberPendingApproval({ approvalKey, code, title, message, sentMessages, timeoutMs }) {
+  if (!approvalKey) return;
+  const state = readTelegramState();
+  const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+    ? state.permissionPendingApprovals
+    : {};
+  pending[approvalKey] = {
+    key: approvalKey,
+    code,
+    title,
+    message,
+    text: approvalRequestText({ title, message }),
+    sentMessages: Array.isArray(sentMessages) ? sentMessages : [],
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + Math.max(Number(timeoutMs || 0), 0) + 15 * 60 * 1000).toISOString()
+  };
+  state.permissionPendingApprovals = prunePendingApprovals(pending);
+  writeTelegramState(state);
+}
+
+function takePendingApproval(approvalKey) {
+  if (!approvalKey) return null;
+  const state = readTelegramState();
+  const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+    ? state.permissionPendingApprovals
+    : {};
+  const entry = pending[approvalKey] || null;
+  if (!entry) return null;
+  delete pending[approvalKey];
+  state.permissionPendingApprovals = pending;
+  writeTelegramState(state);
+  return entry;
+}
+
+function forgetPendingApproval(approvalKey) {
+  if (!approvalKey) return;
+  const state = readTelegramState();
+  const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+    ? state.permissionPendingApprovals
+    : {};
+  if (!pending[approvalKey]) return;
+  delete pending[approvalKey];
+  state.permissionPendingApprovals = pending;
+  writeTelegramState(state);
+}
+
+function prunePendingApprovals(pending) {
+  const now = Date.now();
+  return Object.fromEntries(Object.entries(pending)
+    .filter(([, value]) => {
+      const expiresAt = Date.parse(value && value.expiresAt || "");
+      return !Number.isFinite(expiresAt) || expiresAt >= now;
+    })
+    .sort((left, right) => String(left[1].createdAt || "").localeCompare(String(right[1].createdAt || "")))
+    .slice(-MAX_ALWAYS_APPROVALS));
+}
+
+function rememberAlwaysApproval(input, result) {
+  if (process.env.CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED === "0") return;
+  const key = permissionApprovalKey(input);
+  const state = readTelegramState();
+  const approvals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
+    ? state.permissionAlwaysApprovals
+    : {};
+  approvals[key] = {
+    key,
+    scope: "session_exact_request",
+    sessionId: singleLine(input && input.session_id || ""),
+    cwd: singleLine(input && input.cwd || ""),
+    toolName: singleLine(input && input.tool_name || "unknown"),
+    chatId: result && result.chatId ? String(result.chatId) : "",
+    userId: result && result.userId ? String(result.userId) : "",
+    approvedAt: new Date().toISOString()
+  };
+  state.permissionAlwaysApprovals = pruneAlwaysApprovals(approvals);
+  writeTelegramState(state);
+}
+
+function pruneAlwaysApprovals(approvals) {
+  return Object.fromEntries(Object.entries(approvals)
+    .sort((left, right) => String(left[1].approvedAt || "").localeCompare(String(right[1].approvedAt || "")))
+    .slice(-MAX_ALWAYS_APPROVALS));
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.keys(value).sort().map((key) => {
+      return `${JSON.stringify(key)}:${stableStringify(value[key])}`;
+    }).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 function isMessageAfter(message, startedAt) {
   const receivedAt = Date.parse(message.receivedAt || message.date || "");
   return !Number.isFinite(receivedAt) || receivedAt >= startedAt;
@@ -383,7 +554,9 @@ async function runCli() {
   try {
     const raw = await readStdin();
     const input = raw.trim() ? JSON.parse(raw) : {};
-    const output = await handlePermissionHook(input);
+    const output = input.hook_event_name === "PostToolUse"
+      ? await handlePostToolUseHook(input)
+      : await handlePermissionHook(input);
     if (output) process.stdout.write(`${output}\n`);
   } catch (error) {
     process.stdout.write(`${systemMessageOutput(`Telegram permission approval unavailable: ${error.message || "unknown error"}`)}\n`);
@@ -392,6 +565,7 @@ async function runCli() {
 
 module.exports = {
   handlePermissionHook,
+  handlePostToolUseHook,
   buildPermissionApprovalRequest,
   formatPermissionDetails,
   permissionDecisionOutput,

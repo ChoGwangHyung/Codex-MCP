@@ -179,5 +179,8 @@ Add-Type -TypeDefinition $source
 
 $bytes = [Convert]::FromBase64String($TextBase64)
 $text = [System.Text.Encoding]::UTF8.GetString($bytes)
+$lineSeparator = [char]0x2028
+$paragraphSeparator = [char]0x2029
+$text = [regex]::Replace($text, "`r`n|`r|`n|$lineSeparator|$paragraphSeparator", '\n')
 
 [CodexConsoleInput]::Inject([uint32]$TargetPid, $text, -not $NoSubmit, $SubmitDelayMs)

@@ -43,6 +43,7 @@ const installed = fs.readFileSync(configFile, "utf8");
 assert.match(installed, /\[features]/);
 assert.match(installed, /codex_hooks = true/);
 assert.match(installed, /\[\[hooks\.PermissionRequest]]/);
+assert.match(installed, /\[\[hooks\.PostToolUse]]/);
 assert.match(installed, /node hook\.js/);
 
 const second = ensurePermissionHookInstalled();

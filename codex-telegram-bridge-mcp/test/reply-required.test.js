@@ -33,3 +33,11 @@ assert.doesNotMatch(consoleLine, /from:/i);
 assert.doesNotMatch(consoleLine, /sent_at/i);
 assert.doesNotMatch(consoleLine, /do not treat/i);
 assert.ok(consoleLine.length <= message.text.length + 35);
+
+const lineBreakMessage = {
+  ...message,
+  text: `line 1\nline 2\rline 3\r\nline 4${String.fromCharCode(0x2028)}line 5`
+};
+const lineBreakConsoleLine = _test.formatConsoleRelayPrompt(lineBreakMessage);
+assert.doesNotMatch(lineBreakConsoleLine, /[\r\n\u2028\u2029]/);
+assert.match(lineBreakConsoleLine, /line 1\\nline 2\\nline 3\\nline 4\\nline 5/);

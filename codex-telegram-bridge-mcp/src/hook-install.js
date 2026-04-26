@@ -124,6 +124,15 @@ function appendManagedHookBlock(text, command) {
     `command = ${JSON.stringify(command)}`,
     "timeout = 330",
     'statusMessage = "Waiting for Telegram approval"',
+    "",
+    "[[hooks.PostToolUse]]",
+    'matcher = "*"',
+    "",
+    "[[hooks.PostToolUse.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(command)}`,
+    "timeout = 30",
+    'statusMessage = "Updating Telegram approval state"',
     HOOK_END
   ].join("\n"));
 }

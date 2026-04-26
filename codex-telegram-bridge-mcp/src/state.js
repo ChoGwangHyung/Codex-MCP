@@ -22,11 +22,19 @@ function normalizeTelegramState(value) {
   const state = value && typeof value === "object" ? value : {};
   const inbox = Array.isArray(state.inbox) ? state.inbox.filter(isInboxMessage) : [];
   const relay = state.relay && typeof state.relay === "object" ? state.relay : {};
+  const permissionAlwaysApprovals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
+    ? state.permissionAlwaysApprovals
+    : {};
+  const permissionPendingApprovals = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+    ? state.permissionPendingApprovals
+    : {};
   return {
     ...state,
     updateOffset: Number.isFinite(Number(state.updateOffset)) ? Number(state.updateOffset) : 0,
     inbox,
-    relay
+    relay,
+    permissionAlwaysApprovals,
+    permissionPendingApprovals
   };
 }
 

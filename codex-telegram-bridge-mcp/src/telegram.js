@@ -205,6 +205,7 @@ async function telegramApprovalRequest(args) {
     text: approvalRequestText({ title, message }),
     choices: [
       { label: "승인", value: "approve" },
+      { label: "항상 승인", value: "always approve" },
       { label: "거부", value: "deny" }
     ],
     timeoutMs,
@@ -350,17 +351,27 @@ function appendApprovalCallbackMessages(state, updates) {
       updateId: Number(update.update_id || 0),
       messageId: Number(rawMessage.message_id || 0),
       chatId,
-      text: `${parsed.decision === "approved" ? "approve" : "deny"} ${parsed.code}`,
+      text: approvalInboxText(parsed),
       date: rawMessage.date ? new Date(Number(rawMessage.date) * 1000).toISOString() : "",
       receivedAt: new Date().toISOString(),
       userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : "",
       from: displayName(rawMessage)
     });
-    answerChoiceCallback(callback.id, parsed.decision === "approved" ? "승인 선택됨" : "거부 선택됨").catch(() => {});
+    answerChoiceCallback(callback.id, approvalCallbackAnswerText(parsed.decision)).catch(() => {});
   }
   if (state.inbox.length > inboxMaxMessages()) {
     state.inbox = state.inbox.slice(-inboxMaxMessages());
   }
+}
+
+function approvalInboxText(parsed) {
+  if (parsed.decision === "always_approved") return `always approve ${parsed.code}`;
+  return `${parsed.decision === "approved" ? "approve" : "deny"} ${parsed.code}`;
+}
+
+function approvalCallbackAnswerText(decision) {
+  if (decision === "always_approved") return "항상 승인 선택됨";
+  return decision === "approved" ? "승인 선택됨" : "거부 선택됨";
 }
 
 function takeFirstInboxMessage(chatId, consume) {
@@ -553,8 +564,11 @@ async function updateChoiceMessage(callback, question, label) {
     chat_id: chatId,
     message_id: messageId,
     text: choiceSelectionText(question, label),
-    disable_web_page_preview: true,
-    reply_markup: { inline_keyboard: [] }
+    disable_web_page_preview: true
+  }).catch(() => {});
+  await telegramApi("editMessageReplyMarkup", {
+    chat_id: chatId,
+    message_id: messageId
   }).catch(() => {});
 }
 

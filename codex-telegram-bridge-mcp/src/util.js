@@ -18,7 +18,7 @@ function normalizeInteger(value, fallback, min, max) {
 }
 
 function singleLine(value) {
-  return String(value || "").replace(/\r?\n/g, "\\n").trim();
+  return String(value || "").replace(/\r\n|\r|\n|\u2028|\u2029/g, "\\n").trim();
 }
 
 function normalizePath(value) {

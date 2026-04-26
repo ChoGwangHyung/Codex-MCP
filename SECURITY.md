@@ -29,13 +29,19 @@ TUI and should only be enabled on trusted machines.
 ## Telegram Permission Hooks
 
 When the Telegram bridge is configured, it installs a user-level Codex
-`PermissionRequest` hook by default. Any allowlisted approval chat can approve
-or deny native Codex permission requests. Use a dedicated
+`PermissionRequest` hook by default. Any allowlisted approval chat can approve,
+always approve, or deny native Codex permission requests. Always approvals are
+stored by the bridge for the same session, cwd, tool name, and exact tool input
+signature; they do not change Codex's global permission configuration. Use a dedicated
 `CODEX_TELEGRAM_APPROVAL_CHAT_IDS` value for trusted operators, keep timeout
 behavior at the default `ask` unless you intentionally want fail-closed `deny`,
 and do not allowlist chats you do not control. Set
+`CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED=0` if you do not want bridge-side always
+approvals. Set
 `CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=0` if you do not want the MCP
-server to manage the user-level hook.
+server to manage the user-level hook. The companion `PostToolUse` hook can mark
+Telegram requests as approved after CLI fallback approval, but CLI denial is not
+observable because the tool does not run.
 
 ## Agentic Bridges
 
