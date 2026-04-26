@@ -1,0 +1,31 @@
+"use strict";
+
+const SERVER_NAME = "codex-telegram-bridge-mcp";
+const SERVER_VERSION = "1.0.0";
+const DEFAULT_TELEGRAM_TIMEOUT_MS = 120000;
+const PROJECT_ENV_FILE = "config.toml.env";
+const PROJECT_ACCESS_FILE = "config.toml.access.json";
+const DEFAULT_MONITOR_POLL_TIMEOUT_SEC = 8;
+const DEFAULT_MONITOR_BACKOFF_MS = 5000;
+const DEFAULT_INBOX_MAX_MESSAGES = 200;
+const DEFAULT_APPROVAL_TIMEOUT_MS = 300000;
+const DEFAULT_APP_SERVER_TIMEOUT_MS = 10000;
+const APP_SERVER_ENDPOINT_CACHE_MS = 30000;
+const APPROVE_TOKENS = new Set(["approve", "approved", "allow", "yes", "y", "ok", "okay", "허용", "승인", "예", "네", "ㅇ"]);
+const DENY_TOKENS = new Set(["deny", "denied", "reject", "no", "n", "cancel", "거부", "취소", "아니오", "아니요", "ㄴ"]);
+
+module.exports = {
+  SERVER_NAME,
+  SERVER_VERSION,
+  DEFAULT_TELEGRAM_TIMEOUT_MS,
+  PROJECT_ENV_FILE,
+  PROJECT_ACCESS_FILE,
+  DEFAULT_MONITOR_POLL_TIMEOUT_SEC,
+  DEFAULT_MONITOR_BACKOFF_MS,
+  DEFAULT_INBOX_MAX_MESSAGES,
+  DEFAULT_APPROVAL_TIMEOUT_MS,
+  DEFAULT_APP_SERVER_TIMEOUT_MS,
+  APP_SERVER_ENDPOINT_CACHE_MS,
+  APPROVE_TOKENS,
+  DENY_TOKENS
+};

@@ -1,0 +1,17 @@
+{
+  "name": "codex-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Workspace for Codex-focused MCP servers.",
+  "license": "MIT",
+  "workspaces": [
+    "codex-ai-bridge-mcp",
+    "codex-telegram-bridge-mcp"
+  ],
+  "scripts": {
+    "check": "npm run check --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
