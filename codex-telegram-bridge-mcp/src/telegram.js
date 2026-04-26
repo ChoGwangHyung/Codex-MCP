@@ -16,9 +16,8 @@ const {
 const { readTelegramState, writeTelegramState } = require("./state.js");
 const { normalizeTimeout, normalizeInteger, delay, sanitize } = require("./util.js");
 const {
-  approvalReplyMarkup,
   approvalRequestText,
-  createApprovalCode,
+  parseApprovalCallbackData,
   parseApprovalDecision
 } = require("./approval.js");
 const {
@@ -196,55 +195,33 @@ async function telegramMonitorStatus() {
 
 async function telegramApprovalRequest(args) {
   assertTelegram(args.chatId);
-  startTelegramMonitor();
   const timeoutMs = normalizeTimeout(args.timeoutMs, DEFAULT_APPROVAL_TIMEOUT_MS);
-  const code = createApprovalCode();
   const title = sanitize(args.title);
   const message = sanitize(args.message);
   const chatId = String(args.chatId);
 
-  await telegramSyncOffset();
-  clearInboxForChat(chatId);
-  await telegramApi("sendMessage", {
-    chat_id: chatId,
-    text: approvalRequestText({ title, message, code }),
-    disable_web_page_preview: true,
-    reply_markup: approvalReplyMarkup(code)
+  const rawResult = await telegramAsk({
+    chatId,
+    text: approvalRequestText({ title, message }),
+    choices: [
+      { label: "승인", value: "approve" },
+      { label: "거부", value: "deny" }
+    ],
+    timeoutMs,
+    disableWebPagePreview: true
   });
-
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const remaining = Math.max(1000, deadline - Date.now());
-    const reply = await waitForInboxMessage(chatId, remaining).catch((error) => {
-      if (/Timed out waiting/.test(error.message || "")) return null;
-      throw error;
-    });
-    if (!reply) break;
-
-    const decision = parseApprovalDecision(reply.text, code);
-    if (decision) {
-      await telegramApi("sendMessage", {
-        chat_id: chatId,
-        text: decision === "approved" ? "Approved / 승인 처리되었습니다." : "Denied / 거부 처리되었습니다.",
-        disable_web_page_preview: true,
-        reply_markup: { remove_keyboard: true }
-      }).catch(() => {});
-      return [
-        `approval: ${decision}`,
-        `chat_id: ${chatId}`,
-        `code: ${code}`,
-        `reply: ${sanitize(reply.text)}`
-      ].join("\n");
-    }
+  const result = JSON.parse(rawResult);
+  if (result.timeout) {
+    return [`approval: timeout`, `chat_id: ${chatId}`].join("\n");
   }
 
-  await telegramApi("sendMessage", {
-    chat_id: chatId,
-    text: "Approval request timed out / 승인 요청 시간이 만료되었습니다.",
-    disable_web_page_preview: true,
-    reply_markup: { remove_keyboard: true }
-  }).catch(() => {});
-  return [`approval: timeout`, `chat_id: ${chatId}`, `code: ${code}`].join("\n");
+  const decision = parseApprovalDecision(result.selected_value || result.selected_label, "");
+  if (!decision) return [`approval: unknown`, `chat_id: ${chatId}`].join("\n");
+  return [
+    `approval: ${decision}`,
+    `chat_id: ${chatId}`,
+    `source: ${sanitize(result.source || "")}`
+  ].filter(Boolean).join("\n");
 }
 
 function startTelegramMonitor() {
@@ -286,6 +263,7 @@ async function pollAndProcessTelegramUpdates(timeoutSeconds) {
   const state = readTelegramState();
   advanceUpdateOffset(state, updates);
   appendAllowedMessages(state, updates);
+  appendApprovalCallbackMessages(state, updates);
   await processChoiceCallbacks(updates);
   state.lastPollAt = new Date().toISOString();
   monitorLastPollAt = state.lastPollAt;
@@ -349,6 +327,36 @@ function appendAllowedMessages(state, updates) {
       userId: message.from && message.from.id !== undefined ? String(message.from.id) : "",
       from: displayName(message)
     });
+  }
+  if (state.inbox.length > inboxMaxMessages()) {
+    state.inbox = state.inbox.slice(-inboxMaxMessages());
+  }
+}
+
+function appendApprovalCallbackMessages(state, updates) {
+  const allowed = allowedChatIds();
+  const seen = new Set(state.inbox.map((message) => message.id));
+  for (const update of Array.isArray(updates) ? updates : []) {
+    const callback = update.callback_query;
+    const parsed = callback && parseApprovalCallbackData(callback.data);
+    const rawMessage = callback && callback.message;
+    const chatId = rawMessage && rawMessage.chat && String(rawMessage.chat.id);
+    if (!parsed || !chatId || !allowed.has(chatId)) continue;
+    const id = `${Number(update.update_id || 0)}:callback:${String(callback.id || "")}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    state.inbox.push({
+      id,
+      updateId: Number(update.update_id || 0),
+      messageId: Number(rawMessage.message_id || 0),
+      chatId,
+      text: `${parsed.decision === "approved" ? "approve" : "deny"} ${parsed.code}`,
+      date: rawMessage.date ? new Date(Number(rawMessage.date) * 1000).toISOString() : "",
+      receivedAt: new Date().toISOString(),
+      userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : "",
+      from: displayName(rawMessage)
+    });
+    answerChoiceCallback(callback.id, parsed.decision === "approved" ? "승인 선택됨" : "거부 선택됨").catch(() => {});
   }
   if (state.inbox.length > inboxMaxMessages()) {
     state.inbox = state.inbox.slice(-inboxMaxMessages());

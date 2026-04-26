@@ -23,17 +23,19 @@ async function withProviderLock(provider, timeoutMs, work) {
 async function acquireProviderLock(provider, timeoutMs) {
   const dir = providerLockPath(provider);
   const deadline = Date.now() + lockWaitMs(timeoutMs);
+  const ownerId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   fs.mkdirSync(path.dirname(dir), { recursive: true });
 
   while (Date.now() <= deadline) {
     try {
       fs.mkdirSync(dir);
       fs.writeFileSync(path.join(dir, "owner.json"), JSON.stringify({
+        ownerId,
         pid: process.pid,
         provider,
         createdAt: new Date().toISOString()
       }, null, 2));
-      return { dir };
+      return { dir, ownerId };
     } catch (error) {
       if (error && error.code !== "EEXIST") throw error;
       removeStaleLock(dir);
@@ -45,6 +47,7 @@ async function acquireProviderLock(provider, timeoutMs) {
 
 function releaseProviderLock(lock) {
   if (!lock || !lock.dir) return;
+  if (!lockIsOwnedByCurrentProcess(lock)) return;
   fs.rmSync(lock.dir, { recursive: true, force: true });
 }
 
@@ -77,6 +80,15 @@ function staleLockMs() {
   const configured = Number(process.env.CODEX_AI_BRIDGE_LOCK_STALE_MS);
   if (Number.isInteger(configured) && configured >= 1000) return configured;
   return DEFAULT_LOCK_STALE_MS;
+}
+
+function lockIsOwnedByCurrentProcess(lock) {
+  try {
+    const owner = JSON.parse(fs.readFileSync(path.join(lock.dir, "owner.json"), "utf8"));
+    return owner && owner.ownerId === lock.ownerId;
+  } catch {
+    return false;
+  }
 }
 
 function safeLockName(value) {

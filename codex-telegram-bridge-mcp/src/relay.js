@@ -357,15 +357,11 @@ function formatRelayPrompt(message) {
 
 function formatConsoleRelayPrompt(message) {
   const text = singleLine(sanitize(message.text));
-  const instruction = relayReplyRequired()
-    ? ` Reply via telegram_send to chatId ${message.chatId}.`
-    : "";
-  return `[Telegram chatId ${message.chatId}] ${text}${instruction}`.trim();
+  return `[Telegram chatId ${message.chatId}] ${text}`.trim();
 }
 
-function relayReplyInstructionLines(message) {
-  if (!relayReplyRequired()) return [];
-  return [`Reply via telegram_send to chatId ${message.chatId}.`];
+function relayReplyInstructionLines() {
+  return [];
 }
 
 async function resolveAppServerEndpoint() {

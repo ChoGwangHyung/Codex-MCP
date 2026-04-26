@@ -233,8 +233,8 @@ Console relay details:
 - `CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1` skips old inbox messages and pairing messages.
 - If Codex app-server status is available, the relay uses it as an idle gate and retries while the target thread is busy.
 
-Relayed prompts instruct Codex to call `telegram_send` to the same `chatId`
-before considering the task complete.
+Relayed prompts contain only the Telegram `chatId` marker and the user's
+message text.
 
 Check relay state:
 
@@ -295,8 +295,10 @@ Behavior:
 
 - The hook only runs for Codex `PermissionRequest` events, such as shell
   escalation, managed-network approval, `apply_patch`, and MCP tool approvals.
-- Replies like `approve <code>`, `승인 <code>`, `deny <code>`, or `거부 <code>`
-  are converted into native Codex allow/deny decisions.
+- Telegram shows `승인` and `거부` inline buttons. The internal request code is
+  kept in the callback payload and is not shown in the message body.
+- Text fallback still accepts approval words such as `approve`, `승인`, `deny`,
+  or `거부` from the same allowlisted chat.
 - If `CODEX_TELEGRAM_APPROVAL_CHAT_IDS` is set, requests go only to those
   allowlisted chats. Otherwise, requests go to all allowlisted chats.
 - If Telegram times out, the default behavior is `ask`, which falls back to the
@@ -318,7 +320,7 @@ Codex permissions, call:
 telegram_approval_request
 ```
 
-The helper sends Telegram quick-reply buttons for approve and deny responses.
+The helper sends Telegram inline buttons for approve and deny responses.
 Use it only in workflows that deliberately call the tool.
 
 ## State Files

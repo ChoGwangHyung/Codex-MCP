@@ -16,6 +16,7 @@ const {
   approvalReplyMarkup,
   approvalRequestText,
   createApprovalCode,
+  parseApprovalCallbackData,
   parseApprovalDecision,
   truncateTelegramText
 } = require("./approval.js");
@@ -154,13 +155,13 @@ async function requestTelegramPermissionApproval({
   const code = createApprovalCode();
   const startedAt = now();
   await syncTelegramOffset(telegramApiFn);
-  await sendApprovalRequest(telegramApiFn, chatIds, { title, message, code });
+  const sentMessages = await sendApprovalRequest(telegramApiFn, chatIds, { title, message, code });
 
   const deadline = now() + timeoutMs;
   while (now() < deadline) {
     const inboxDecision = takeMatchingInboxDecision(chatIds, code, startedAt);
     if (inboxDecision) {
-      await sendApprovalResult(telegramApiFn, inboxDecision.chatId, inboxDecision.decision);
+      await sendApprovalResult(telegramApiFn, inboxDecision, sentMessages);
       return inboxDecision;
     }
 
@@ -168,41 +169,69 @@ async function requestTelegramPermissionApproval({
     const updates = await fetchTelegramUpdates(telegramApiFn, Math.min(DEFAULT_POLL_TIMEOUT_SEC, Math.ceil(remainingMs / 1000)));
     const updateDecision = storeUpdatesAndFindDecision(updates, chatIds, code, startedAt);
     if (updateDecision) {
-      await sendApprovalResult(telegramApiFn, updateDecision.chatId, updateDecision.decision);
+      await sendApprovalResult(telegramApiFn, updateDecision, sentMessages);
       return updateDecision;
     }
   }
 
-  await sendApprovalTimeout(telegramApiFn, chatIds);
+  await sendApprovalTimeout(telegramApiFn, chatIds, sentMessages);
   return { decision: "timeout", code };
 }
 
 async function sendApprovalRequest(telegramApiFn, chatIds, request) {
   const text = approvalRequestText(request);
-  await Promise.all(chatIds.map((chatId) => telegramApiFn("sendMessage", {
-    chat_id: chatId,
-    text,
-    disable_web_page_preview: true,
-    reply_markup: approvalReplyMarkup(request.code)
-  })));
+  return Promise.all(chatIds.map(async (chatId) => {
+    const sent = await telegramApiFn("sendMessage", {
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      reply_markup: approvalReplyMarkup(request.code)
+    });
+    return { chatId: String(chatId), messageId: sent && sent.message_id };
+  }));
 }
 
-async function sendApprovalResult(telegramApiFn, chatId, decision) {
-  await telegramApiFn("sendMessage", {
-    chat_id: chatId,
-    text: decision === "approved" ? "Approved / 승인 처리되었습니다." : "Denied / 거부 처리되었습니다.",
-    disable_web_page_preview: true,
-    reply_markup: { remove_keyboard: true }
-  }).catch(() => {});
+async function sendApprovalResult(telegramApiFn, result, sentMessages) {
+  const text = result.decision === "approved" ? "승인 처리되었습니다." : "거부 처리되었습니다.";
+  if (result.callbackQueryId) {
+    await answerApprovalCallback(telegramApiFn, result.callbackQueryId, text);
+  }
+  await clearApprovalButtons(telegramApiFn, sentMessages);
+  if (!result.callbackQueryId) {
+    await telegramApiFn("sendMessage", {
+      chat_id: result.chatId,
+      text,
+      disable_web_page_preview: true
+    }).catch(() => {});
+  }
 }
 
-async function sendApprovalTimeout(telegramApiFn, chatIds) {
+async function sendApprovalTimeout(telegramApiFn, chatIds, sentMessages) {
+  await clearApprovalButtons(telegramApiFn, sentMessages);
   await Promise.all(chatIds.map((chatId) => telegramApiFn("sendMessage", {
     chat_id: chatId,
     text: "Approval request timed out / 승인 요청 시간이 만료되었습니다.",
-    disable_web_page_preview: true,
-    reply_markup: { remove_keyboard: true }
+    disable_web_page_preview: true
   }).catch(() => {})));
+}
+
+async function answerApprovalCallback(telegramApiFn, callbackQueryId, text) {
+  await telegramApiFn("answerCallbackQuery", {
+    callback_query_id: callbackQueryId,
+    text,
+    show_alert: false
+  }).catch(() => {});
+}
+
+async function clearApprovalButtons(telegramApiFn, sentMessages) {
+  await Promise.all((sentMessages || []).map((message) => {
+    if (!message || !message.chatId || !message.messageId) return Promise.resolve();
+    return telegramApiFn("editMessageReplyMarkup", {
+      chat_id: message.chatId,
+      message_id: message.messageId,
+      reply_markup: { inline_keyboard: [] }
+    }).catch(() => {});
+  }));
 }
 
 async function syncTelegramOffset(telegramApiFn) {
@@ -218,7 +247,7 @@ async function fetchTelegramUpdates(telegramApiFn, timeoutSeconds) {
     offset: Number(state.updateOffset || 0),
     timeout: timeoutSeconds,
     limit: 100,
-    allowed_updates: ["message"]
+    allowed_updates: ["message", "callback_query"]
   });
   const nextState = readTelegramState();
   advanceUpdateOffset(nextState, updates);
@@ -261,6 +290,12 @@ function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
   let decision = null;
 
   for (const update of Array.isArray(updates) ? updates : []) {
+    const callbackDecision = approvalCallbackFromUpdate(update, selected, code);
+    if (callbackDecision) {
+      decision = callbackDecision;
+      continue;
+    }
+
     const message = messageFromUpdate(update);
     if (!message || !allowed.has(message.chatId)) continue;
 
@@ -285,6 +320,22 @@ function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
 
   writeTelegramState(state);
   return decision;
+}
+
+function approvalCallbackFromUpdate(update, selected, code) {
+  const callback = update && update.callback_query;
+  const parsed = callback && parseApprovalCallbackData(callback.data, code);
+  const chatId = callback && callback.message && callback.message.chat && String(callback.message.chat.id);
+  if (!parsed || !chatId || !selected.has(chatId) || !allowedChatIds().has(chatId)) return null;
+  return {
+    decision: parsed.decision,
+    chatId,
+    code: parsed.code,
+    source: "button",
+    callbackQueryId: callback.id,
+    messageId: callback.message && callback.message.message_id,
+    userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : ""
+  };
 }
 
 function messageFromUpdate(update) {

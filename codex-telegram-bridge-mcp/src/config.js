@@ -56,7 +56,7 @@ function relayConsoleSubmitDelayMs() {
 }
 
 function relayReplyRequired() {
-  return true;
+  return false;
 }
 
 function telegramEnabled() {

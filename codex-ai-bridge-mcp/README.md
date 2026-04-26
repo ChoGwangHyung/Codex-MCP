@@ -113,6 +113,7 @@ Gemini tasks do not accept `effort`.
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | Default Claude model. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | Default Claude effort. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns. Use `1` for one-shot gates. |
+| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Default task timeout. Defaults to `600000` ms. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Override Gemini CLI command. |
 | `CODEX_AI_BRIDGE_GEMINI_SANDBOX` | Set to `1` to pass Gemini sandbox options. |
 | `CODEX_AI_BRIDGE_ALLOW_AGENTIC` | Set to `1` to allow `agentic` policy. |
@@ -124,7 +125,9 @@ Gemini tasks do not accept `effort`.
 Provider locks prevent multiple Codex sessions from invoking the same external
 provider CLI at the same time. This avoids common Claude/Gemini CLI session,
 quota, and local state collisions while still allowing Claude and Gemini to run
-in parallel with each other.
+in parallel with each other. The default task timeout is intentionally long
+enough for queued sessions to wait for an active provider call instead of
+failing quickly.
 
 ## Example
 
