@@ -1,11 +1,8 @@
 "use strict";
 
-const crypto = require("node:crypto");
 const {
   DEFAULT_TELEGRAM_TIMEOUT_MS,
-  DEFAULT_APPROVAL_TIMEOUT_MS,
-  APPROVE_TOKENS,
-  DENY_TOKENS
+  DEFAULT_APPROVAL_TIMEOUT_MS
 } = require("./constants.js");
 const {
   monitorPollTimeoutSec,
@@ -18,6 +15,22 @@ const {
 } = require("./config.js");
 const { readTelegramState, writeTelegramState } = require("./state.js");
 const { normalizeTimeout, normalizeInteger, delay, sanitize } = require("./util.js");
+const {
+  approvalReplyMarkup,
+  approvalRequestText,
+  createApprovalCode,
+  parseApprovalDecision
+} = require("./approval.js");
+const {
+  choiceReplyMarkup,
+  choiceSelectionText,
+  createChoiceRequestId,
+  findChoiceByText,
+  normalizeChoices,
+  parseChoiceCallbackData,
+  selectedChoiceResult,
+  timeoutChoiceResult
+} = require("./choices.js");
 
 let monitorStarted = false;
 let monitorRunning = false;
@@ -26,6 +39,7 @@ let monitorLastError = "";
 let monitorLastErrorAt = "";
 let pollInFlight = null;
 const inboxWaiters = new Set();
+const choiceWaiters = new Set();
 let relayHooks = {
   start: () => {},
   schedule: () => {}
@@ -95,12 +109,36 @@ async function telegramSyncOffset() {
 }
 
 async function telegramAsk(args) {
-  assertTelegram(args.chatId);
+  const chatId = resolveChatId(args.chatId);
+  const text = telegramAskText(args);
+  const timeoutMs = normalizeTimeout(args.timeoutMs || args.timeout, DEFAULT_TELEGRAM_TIMEOUT_MS);
+  const choices = normalizeChoices(args.choices || args.options);
+  assertTelegram(chatId);
   startTelegramMonitor();
   await telegramSyncOffset();
-  clearInboxForChat(args.chatId);
-  await telegramSend(args);
-  return telegramWaitReply({ ...args, ignoreExisting: false });
+  clearInboxForChat(chatId);
+
+  if (choices.length === 0) {
+    await telegramSend({ ...args, chatId, text });
+    return telegramWaitReply({ ...args, chatId, timeoutMs, ignoreExisting: false });
+  }
+
+  const requestId = createChoiceRequestId();
+  const sent = await telegramApi("sendMessage", {
+    chat_id: chatId,
+    text,
+    disable_web_page_preview: Boolean(args.disableWebPagePreview),
+    reply_markup: choiceReplyMarkup(requestId, choices)
+  });
+  const result = await waitForChoiceResponse({
+    chatId,
+    messageId: sent && sent.message_id,
+    question: text,
+    choices,
+    requestId,
+    timeoutMs
+  });
+  return JSON.stringify(result, null, 2);
 }
 
 async function telegramInboxRead(args) {
@@ -160,7 +198,7 @@ async function telegramApprovalRequest(args) {
   assertTelegram(args.chatId);
   startTelegramMonitor();
   const timeoutMs = normalizeTimeout(args.timeoutMs, DEFAULT_APPROVAL_TIMEOUT_MS);
-  const code = crypto.randomBytes(3).toString("hex");
+  const code = createApprovalCode();
   const title = sanitize(args.title);
   const message = sanitize(args.message);
   const chatId = String(args.chatId);
@@ -169,23 +207,9 @@ async function telegramApprovalRequest(args) {
   clearInboxForChat(chatId);
   await telegramApi("sendMessage", {
     chat_id: chatId,
-    text: [
-      "Approval request / 승인 요청",
-      "",
-      title,
-      "",
-      message,
-      "",
-      `Code / 코드: ${code}`,
-      "Approve: choose or type 'approve' or '승인'.",
-      "Deny: choose or type 'deny' or '거부'."
-    ].join("\n"),
+    text: approvalRequestText({ title, message, code }),
     disable_web_page_preview: true,
-    reply_markup: {
-      keyboard: [[`approve ${code}`, `deny ${code}`]],
-      resize_keyboard: true,
-      one_time_keyboard: true
-    }
+    reply_markup: approvalReplyMarkup(code)
   });
 
   const deadline = Date.now() + timeoutMs;
@@ -253,18 +277,22 @@ async function telegramMonitorLoop() {
 }
 
 async function pollAndStoreTelegramUpdates(timeoutSeconds) {
-  await withPollLock(async () => {
-    const updates = await fetchTelegramUpdates(timeoutSeconds);
-    const state = readTelegramState();
-    advanceUpdateOffset(state, updates);
-    appendAllowedMessages(state, updates);
-    state.lastPollAt = new Date().toISOString();
-    monitorLastPollAt = state.lastPollAt;
-    if (monitorLastErrorAt) state.lastErrorAt = monitorLastErrorAt;
-    writeTelegramState(state);
-    notifyInboxWaiters();
-  });
+  await withPollLock(() => pollAndProcessTelegramUpdates(timeoutSeconds));
   relayHooks.schedule();
+}
+
+async function pollAndProcessTelegramUpdates(timeoutSeconds) {
+  const updates = await fetchTelegramUpdates(timeoutSeconds);
+  const state = readTelegramState();
+  advanceUpdateOffset(state, updates);
+  appendAllowedMessages(state, updates);
+  await processChoiceCallbacks(updates);
+  state.lastPollAt = new Date().toISOString();
+  monitorLastPollAt = state.lastPollAt;
+  if (monitorLastErrorAt) state.lastErrorAt = monitorLastErrorAt;
+  writeTelegramState(state);
+  notifyChoiceWaiters();
+  notifyInboxWaiters();
 }
 
 async function withPollLock(work) {
@@ -287,7 +315,7 @@ async function fetchTelegramUpdates(timeoutSeconds) {
     offset: Number(readTelegramState().updateOffset || 0),
     timeout: timeoutSeconds,
     limit: 100,
-    allowed_updates: ["message"]
+    allowed_updates: ["message", "callback_query"]
   });
 }
 
@@ -318,6 +346,7 @@ function appendAllowedMessages(state, updates) {
       text,
       date: message.date ? new Date(Number(message.date) * 1000).toISOString() : "",
       receivedAt: new Date().toISOString(),
+      userId: message.from && message.from.id !== undefined ? String(message.from.id) : "",
       from: displayName(message)
     });
   }
@@ -340,6 +369,60 @@ function clearInboxForChat(chatId) {
   const before = state.inbox.length;
   state.inbox = state.inbox.filter((message) => message.chatId !== String(chatId));
   if (state.inbox.length !== before) writeTelegramState(state);
+}
+
+function resolveChatId(chatId) {
+  if (chatId !== undefined && chatId !== null && String(chatId).trim()) {
+    return String(chatId).trim();
+  }
+  if (!bridgeEnabled()) {
+    throw new Error("Telegram bridge is disabled. Set CODEX_TELEGRAM_BRIDGE_ENABLED=1.");
+  }
+  if (!process.env.TELEGRAM_BOT_TOKEN) {
+    throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
+  }
+  const allowed = Array.from(allowedChatIds());
+  if (allowed.length === 1) return allowed[0];
+  if (allowed.length === 0) throw new Error("no Telegram chat is allowlisted.");
+  throw new Error("chatId is required when multiple Telegram chats are allowlisted.");
+}
+
+function telegramAskText(args) {
+  const text = sanitize(args.text || args.message || args.question);
+  if (!text) throw new Error("text, message, or question is required");
+  return text;
+}
+
+function waitForChoiceResponse({ chatId, messageId, question, choices, requestId, timeoutMs }) {
+  return new Promise((resolve) => {
+    const waiter = {
+      chatId: String(chatId),
+      messageId: Number(messageId || 0),
+      question,
+      choices,
+      requestId,
+      resolve,
+      done: false,
+      timer: null
+    };
+    waiter.timer = setTimeout(() => {
+      settleChoiceWaiter(waiter, timeoutChoiceResult({ chatId, messageId, requestId }));
+    }, timeoutMs);
+    choiceWaiters.add(waiter);
+    notifyChoiceWaiters();
+    void pollChoiceUntilSettled(waiter);
+  });
+}
+
+async function pollChoiceUntilSettled(waiter) {
+  while (!waiter.done) {
+    try {
+      await withPollLock(() => pollAndProcessTelegramUpdates(2));
+    } catch {
+      await delay(1000);
+    }
+    if (!waiter.done) await delay(100);
+  }
 }
 
 function waitForInboxMessage(chatId, timeoutMs) {
@@ -372,6 +455,109 @@ function notifyInboxWaiters() {
   }
 }
 
+function notifyChoiceWaiters() {
+  for (const waiter of Array.from(choiceWaiters)) {
+    if (waiter.done) continue;
+    const message = takeMatchingChoiceMessage(waiter);
+    if (!message) continue;
+    const choice = findChoiceByText(waiter.choices, message.text);
+    settleChoiceWaiter(waiter, selectedChoiceResult({
+      choice,
+      chatId: message.chatId,
+      messageId: waiter.messageId || message.messageId,
+      userId: message.userId,
+      timestamp: message.receivedAt || message.date,
+      source: "text",
+      requestId: waiter.requestId
+    }));
+  }
+}
+
+function takeMatchingChoiceMessage(waiter) {
+  const state = readTelegramState();
+  const index = state.inbox.findIndex((message) => {
+    return message.chatId === waiter.chatId && Boolean(findChoiceByText(waiter.choices, message.text));
+  });
+  if (index < 0) return null;
+  const [message] = state.inbox.splice(index, 1);
+  writeTelegramState(state);
+  return message;
+}
+
+async function processChoiceCallbacks(updates) {
+  for (const update of Array.isArray(updates) ? updates : []) {
+    const callback = update.callback_query;
+    if (!callback) continue;
+    const parsed = parseChoiceCallbackData(callback.data);
+    if (!parsed) continue;
+
+    const waiter = findChoiceWaiter(parsed.requestId, callback);
+    if (!waiter || waiter.done) {
+      await answerChoiceCallback(callback.id, "선택이 이미 처리되었거나 만료되었습니다.");
+      continue;
+    }
+
+    const choice = waiter.choices[parsed.index];
+    if (!choice) {
+      await answerChoiceCallback(callback.id, "알 수 없는 선택입니다.");
+      continue;
+    }
+
+    await answerChoiceCallback(callback.id, `선택됨: ${choice.label}`);
+    await updateChoiceMessage(callback, waiter.question, choice.label);
+    settleChoiceWaiter(waiter, selectedChoiceResult({
+      choice,
+      chatId: callback.message && callback.message.chat && callback.message.chat.id,
+      messageId: callback.message && callback.message.message_id,
+      userId: callback.from && callback.from.id,
+      timestamp: new Date().toISOString(),
+      source: "button",
+      requestId: waiter.requestId
+    }));
+  }
+}
+
+function findChoiceWaiter(requestId, callback) {
+  const chatId = callback && callback.message && callback.message.chat && String(callback.message.chat.id);
+  const messageId = callback && callback.message && Number(callback.message.message_id || 0);
+  return Array.from(choiceWaiters).find((waiter) => {
+    return waiter.requestId === requestId &&
+      (!chatId || waiter.chatId === chatId) &&
+      (!messageId || !waiter.messageId || waiter.messageId === messageId);
+  }) || null;
+}
+
+async function answerChoiceCallback(callbackQueryId, text) {
+  if (!callbackQueryId) return;
+  await telegramApi("answerCallbackQuery", {
+    callback_query_id: callbackQueryId,
+    text,
+    show_alert: false
+  }).catch(() => {});
+}
+
+async function updateChoiceMessage(callback, question, label) {
+  const message = callback && callback.message;
+  const chatId = message && message.chat && message.chat.id;
+  const messageId = message && message.message_id;
+  if (!chatId || !messageId) return;
+  await telegramApi("editMessageText", {
+    chat_id: chatId,
+    message_id: messageId,
+    text: choiceSelectionText(question, label),
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: [] }
+  }).catch(() => {});
+}
+
+function settleChoiceWaiter(waiter, result) {
+  if (waiter.done) return;
+  waiter.done = true;
+  clearTimeout(waiter.timer);
+  choiceWaiters.delete(waiter);
+  waiter.resolve(result);
+}
+
 function formatReply(message) {
   return `telegram reply from ${message.chatId}:\n${sanitize(message.text)}`;
 }
@@ -380,19 +566,6 @@ function formatInboxLine(message) {
   const when = message.date || message.receivedAt || "";
   const from = message.from ? ` ${message.from}` : "";
   return `[${when}] ${message.chatId}${from}: ${sanitize(message.text)}`;
-}
-
-function parseApprovalDecision(text, code) {
-  const normalized = String(text || "").trim().toLowerCase();
-  const withoutCode = normalized.replace(String(code).toLowerCase(), "").trim();
-  const firstToken = withoutCode.split(/\s+/).filter(Boolean)[0] || withoutCode;
-  if (APPROVE_TOKENS.has(normalized) || APPROVE_TOKENS.has(withoutCode) || APPROVE_TOKENS.has(firstToken)) {
-    return "approved";
-  }
-  if (DENY_TOKENS.has(normalized) || DENY_TOKENS.has(withoutCode) || DENY_TOKENS.has(firstToken)) {
-    return "denied";
-  }
-  return "";
 }
 
 function displayName(message) {
@@ -411,5 +584,6 @@ module.exports = {
   telegramMonitorStatus,
   telegramApprovalRequest,
   startTelegramMonitor,
-  telegramApi
+  telegramApi,
+  parseApprovalDecision
 };

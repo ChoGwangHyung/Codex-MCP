@@ -22,6 +22,10 @@ const {
   telegramRelayStatus
 } = require("./relay.js");
 const {
+  maybeInstallPermissionHook,
+  permissionHookStatus
+} = require("./hook-install.js");
+const {
   setRelayHooks,
   startTelegramMonitor,
   telegramApprovalRequest,
@@ -53,11 +57,17 @@ const tools = [
       description: "When true, consume existing updates before waiting for the next message."
     }
   }, ["chatId"]),
-  tool("telegram_ask", "Send a Telegram question and wait for one reply from the same allowlisted chat.", {
+  tool("telegram_ask", "Send a Telegram question and wait for one reply or an inline button choice from the same allowlisted chat.", {
     chatId: { type: "string", minLength: 1 },
     text: { type: "string", minLength: 1 },
+    message: { type: "string", minLength: 1 },
+    question: { type: "string", minLength: 1 },
+    choices: choiceArraySchema(),
+    options: choiceArraySchema(),
+    disableWebPagePreview: { type: "boolean", default: false },
+    timeout: { type: "integer", minimum: 5000, maximum: 900000, default: DEFAULT_TELEGRAM_TIMEOUT_MS },
     timeoutMs: { type: "integer", minimum: 5000, maximum: 900000, default: DEFAULT_TELEGRAM_TIMEOUT_MS }
-  }, ["chatId", "text"]),
+  }, []),
   tool("telegram_inbox_read", "Read messages captured by the automatic Telegram receive monitor.", {
     chatId: { type: "string", minLength: 1 },
     limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
@@ -89,6 +99,32 @@ function tool(name, description, properties, required = []) {
   };
 }
 
+function choiceArraySchema() {
+  return {
+    type: "array",
+    minItems: 1,
+    maxItems: 12,
+    items: {
+      anyOf: [
+        { type: "string", minLength: 1 },
+        {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            label: { type: "string", minLength: 1 },
+            title: { type: "string", minLength: 1 },
+            text: { type: "string", minLength: 1 },
+            name: { type: "string", minLength: 1 },
+            value: { type: "string", minLength: 1 },
+            id: { type: "string", minLength: 1 },
+            key: { type: "string", minLength: 1 }
+          }
+        }
+      ]
+    }
+  };
+}
+
 function respond(id, result) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
 }
@@ -102,6 +138,7 @@ function textResult(text, isError = false) {
 }
 
 async function healthCheck() {
+  const hook = permissionHookStatus();
   return [
     `telegram: ${telegramEnabled() ? "configured" : "disabled or incomplete"}`,
     `config_dir: ${telegramConfigDir()}`,
@@ -110,7 +147,9 @@ async function healthCheck() {
     `token: ${process.env.TELEGRAM_BOT_TOKEN ? maskToken(process.env.TELEGRAM_BOT_TOKEN) : "not set"}`,
     `enabled: ${bridgeEnabled() ? "yes" : "no"}`,
     `allowed_chats: ${allowedChatIds().size}`,
-    `codex_relay: ${relayEnabled() ? "enabled" : "disabled"}`
+    `codex_relay: ${relayEnabled() ? "enabled" : "disabled"}`,
+    `permission_hook: ${hook.installed ? "installed" : "not installed"}`,
+    `permission_hook_config: ${hook.path}`
   ].join("\n");
 }
 
@@ -148,6 +187,7 @@ async function handleMessage(message) {
 }
 
 function main() {
+  maybeInstallPermissionHook();
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on("line", async (line) => {
     const trimmed = line.trim();

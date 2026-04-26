@@ -118,6 +118,14 @@ Gemini 작업은 `effort`를 받지 않습니다.
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Gemini CLI command override입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_SANDBOX` | `1`이면 Gemini sandbox 옵션을 전달합니다. |
 | `CODEX_AI_BRIDGE_ALLOW_AGENTIC` | `1`이면 `agentic` 정책을 허용합니다. |
+| `CODEX_AI_BRIDGE_PROVIDER_LOCK` | 기본값은 활성화입니다. `0`이면 여러 세션의 같은 provider 동시 호출을 허용합니다. |
+| `CODEX_AI_BRIDGE_LOCK_DIR` | cross-process provider lock 디렉터리를 override합니다. |
+| `CODEX_AI_BRIDGE_LOCK_WAIT_MS` | provider lock을 기다릴 최대 시간입니다. 기본값은 task timeout입니다. |
+| `CODEX_AI_BRIDGE_LOCK_STALE_MS` | provider lock을 stale로 볼 기준 시간입니다. |
+
+Provider lock은 여러 Codex 세션이 같은 외부 provider CLI를 동시에 실행하지 않게
+합니다. Claude/Gemini CLI의 세션, quota, 로컬 상태 충돌을 줄이면서도 Claude와
+Gemini 서로 다른 provider는 병렬 실행됩니다.
 
 ## 예시
 

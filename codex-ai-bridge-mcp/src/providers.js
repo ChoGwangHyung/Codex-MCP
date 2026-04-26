@@ -14,6 +14,7 @@ const {
   validateTaskArgs
 } = require("./config.js");
 const { buildPrompt } = require("./prompt.js");
+const { withProviderLock } = require("./lock.js");
 const { runCommand } = require("./runner.js");
 const { sanitize, stderrSummary } = require("./util.js");
 
@@ -72,11 +73,11 @@ async function askProvider(provider, rawArgs) {
   const args = validateTaskArgs(rawArgs);
   const prompt = buildPrompt(args);
   const command = providerCommand(provider, args);
-  const result = await runCommand(command.command, command.args, {
+  const result = await withProviderLock(provider, args.timeoutMs, () => runCommand(command.command, command.args, {
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     input: prompt
-  });
+  }));
   const output = sanitize(result.stdout);
   if (result.ok) return `${provider} result:\n${output || "(no output)"}`;
   const err = result.timedOut ? `Timed out after ${args.timeoutMs}ms` : result.error || `Exited with code ${result.exitCode}`;

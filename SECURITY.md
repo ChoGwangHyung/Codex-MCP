@@ -26,6 +26,17 @@ The Telegram relay is intended for operator coordination. Only allowlist chats
 you control. Windows console relay mode injects key events into a local Codex
 TUI and should only be enabled on trusted machines.
 
+## Telegram Permission Hooks
+
+When the Telegram bridge is configured, it installs a user-level Codex
+`PermissionRequest` hook by default. Any allowlisted approval chat can approve
+or deny native Codex permission requests. Use a dedicated
+`CODEX_TELEGRAM_APPROVAL_CHAT_IDS` value for trusted operators, keep timeout
+behavior at the default `ask` unless you intentionally want fail-closed `deny`,
+and do not allowlist chats you do not control. Set
+`CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=0` if you do not want the MCP
+server to manage the user-level hook.
+
 ## Agentic Bridges
 
 `codex-ai-bridge-mcp` defaults to advisory/read-only behavior. Agentic provider

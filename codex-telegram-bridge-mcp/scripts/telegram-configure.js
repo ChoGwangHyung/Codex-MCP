@@ -14,6 +14,7 @@ const CONFIG_DIR = path.dirname(ENV_FILE);
 const ACCESS_FILE = resolveAccessFile();
 const DISPLAY_COMMAND = process.env.CODEX_TELEGRAM_CONFIGURE_COMMAND ||
   `node ${quoteForDisplay(__filename)}`;
+const PERMISSION_HOOK_SCRIPT = path.join(__dirname, "codex-permission-telegram.js");
 const PAIRING_TTL_MS = normalizePairingTtl(process.env.CODEX_TELEGRAM_PAIRING_TTL_MS);
 
 const [command, ...rest] = process.argv.slice(2);
@@ -96,6 +97,11 @@ async function main() {
 
   if (command === "discover") {
     await discoverChats();
+    return;
+  }
+
+  if (command === "hook-snippet") {
+    printPermissionHookSnippet();
     return;
   }
 
@@ -443,9 +449,31 @@ function commandExample(args) {
   return `${DISPLAY_COMMAND} ${args}`;
 }
 
+function printPermissionHookSnippet() {
+  const hookCommand = `node ${quoteForShell(PERMISSION_HOOK_SCRIPT)}`;
+  console.log([
+    "[features]",
+    "codex_hooks = true",
+    "",
+    "[[hooks.PermissionRequest]]",
+    'matcher = "*"',
+    "",
+    "[[hooks.PermissionRequest.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(hookCommand)}`,
+    "timeout = 330",
+    'statusMessage = "Waiting for Telegram approval"'
+  ].join("\n"));
+}
+
 function quoteForDisplay(value) {
   const text = String(value || "");
   return /\s/.test(text) ? `"${text}"` : text;
+}
+
+function quoteForShell(value) {
+  const text = String(value || "");
+  return /\s/.test(text) ? `"${text.replace(/"/g, '\\"')}"` : text;
 }
 
 function escapeRegex(value) {
@@ -464,6 +492,7 @@ function usage() {
     `  ${commandExample("allow <chat-id>")}`,
     `  ${commandExample("remove <chat-id>")}`,
     `  ${commandExample("policy allowlist|disabled")}`,
+    `  ${commandExample("hook-snippet")}`,
     `  ${commandExample("clear")}`
   ].join("\n"));
 }

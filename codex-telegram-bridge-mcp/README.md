@@ -20,12 +20,19 @@ general-purpose Telegram bot framework.
 | `telegram_approval_request` | Ask Telegram for an explicit workflow approval. |
 | `telegram_bridge_health` | Check token, allowlist, and runtime health. |
 
+The package also includes a Codex hook command:
+
+| Command | Purpose |
+| --- | --- |
+| `codex-telegram-permission-hook` | Handle native Codex `PermissionRequest` approvals through Telegram. |
+
 ## Requirements
 
 - Node.js 20 or newer.
 - A Telegram bot token from `@BotFather`.
 - A Telegram chat that has already sent `/start` or another message to the bot.
 - A Codex project configured to load this MCP server.
+- Codex hooks enabled when using native permission approval.
 - Core Telegram tools run anywhere Node.js runs. Console relay mode uses bundled
   Windows PowerShell helpers; use `app-server` mode or disable relay on other
   platforms.
@@ -68,6 +75,11 @@ TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
+# Optional native Codex permission approval:
+# CODEX_TELEGRAM_APPROVAL_CHAT_IDS=<chat-id>
+# CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
+# CODEX_TELEGRAM_PERMISSION_TIMEOUT_BEHAVIOR=ask
+# CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=1
 ```
 
 Commit only a safe `.codex/config.toml.env.example` file.
@@ -115,6 +127,7 @@ node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js allow <
 node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js remove <chat-id>
 node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js policy allowlist
 node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js policy disabled
+node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js hook-snippet
 node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js clear
 ```
 
@@ -146,6 +159,54 @@ Check monitor state:
 
 ```text
 telegram_monitor_status
+```
+
+## Choice Questions
+
+`telegram_ask` can send inline keyboard choices and wait for either a button
+click or a text fallback reply. This is useful for flows such as Claude fallback
+decisions:
+
+```json
+{
+  "message": "Claude review is unavailable. Choose the next action.",
+  "choices": [
+    { "label": "진행", "value": "proceed" },
+    { "label": "대기", "value": "wait" },
+    { "label": "중단", "value": "stop" }
+  ],
+  "timeoutMs": 300000
+}
+```
+
+When there is exactly one allowlisted chat, `chatId` may be omitted. The default
+UX is button-based. If callback delivery fails or the client cannot use buttons,
+typing the label or value still works as a fallback.
+
+Selection result:
+
+```json
+{
+  "status": "selected",
+  "timeout": false,
+  "selected_label": "진행",
+  "selected_value": "proceed",
+  "chatId": "12345",
+  "messageId": 99,
+  "userId": "777",
+  "timestamp": "2026-04-26T00:00:00.000Z"
+}
+```
+
+Timeout result:
+
+```json
+{
+  "status": "timeout",
+  "timeout": true,
+  "chatId": "12345",
+  "messageId": 99
+}
 ```
 
 ## Telegram-To-Codex Relay
@@ -181,18 +242,81 @@ Check relay state:
 telegram_relay_status
 ```
 
-## Approval Helper
+## Native Codex Permission Approval
 
-MCP servers cannot replace native Codex permission prompts. This bridge provides
-an explicit workflow helper only:
+Codex can call the bundled hook command whenever it is about to show a native
+approval prompt. The hook sends the request to Telegram and returns Codex's
+`allow` or `deny` decision from the Telegram reply.
+
+When the MCP server starts and Telegram is fully configured, it automatically
+installs a user-level Codex `PermissionRequest` hook into
+`$CODEX_HOME/config.toml` or `%USERPROFILE%/.codex/config.toml`. Project
+`.codex/config.toml` files are not modified. This makes the hook available to
+existing Codex projects without per-project setup.
+
+If the current Codex process loaded config before the hook was installed,
+restart or resume Codex once. After that, MCP connection plus the user-level
+hook is enough for native permission requests to go through Telegram.
+
+Set `CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=0` to disable automatic hook
+installation. To inspect or manually install the same hook, print the snippet:
+
+```powershell
+node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js hook-snippet
+```
+
+The command prints a TOML snippet like this:
+
+```toml
+[features]
+codex_hooks = true
+
+[[hooks.PermissionRequest]]
+matcher = "*"
+
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
+timeout = 330
+statusMessage = "Waiting for Telegram approval"
+```
+
+If installed globally from npm, use the package binary:
+
+```toml
+[[hooks.PermissionRequest.hooks]]
+type = "command"
+command = "codex-telegram-permission-hook"
+timeout = 330
+statusMessage = "Waiting for Telegram approval"
+```
+
+Behavior:
+
+- The hook only runs for Codex `PermissionRequest` events, such as shell
+  escalation, managed-network approval, `apply_patch`, and MCP tool approvals.
+- Replies like `approve <code>`, `승인 <code>`, `deny <code>`, or `거부 <code>`
+  are converted into native Codex allow/deny decisions.
+- If `CODEX_TELEGRAM_APPROVAL_CHAT_IDS` is set, requests go only to those
+  allowlisted chats. Otherwise, requests go to all allowlisted chats.
+- If Telegram times out, the default behavior is `ask`, which falls back to the
+  normal Codex approval prompt. Set `CODEX_TELEGRAM_PERMISSION_TIMEOUT_BEHAVIOR=deny`
+  to fail closed.
+- Set `CODEX_TELEGRAM_PERMISSION_APPROVAL_ENABLED=0` to disable the hook without
+  removing hook config.
+
+The hook uses the same token, allowlist, and runtime files as the MCP server.
+Set the Telegram env/access file paths in the Codex hook environment or in the
+project-local `.codex/config.toml.env`.
+
+## Workflow Approval Helper
+
+For explicit agent workflows that need an approval step separate from native
+Codex permissions, call:
 
 ```text
 telegram_approval_request
 ```
-
-Connecting this MCP server does not automatically forward native Codex approval
-prompts to Telegram. An agent or workflow must call `telegram_approval_request`
-explicitly.
 
 The helper sends Telegram quick-reply buttons for approve and deny responses.
 Use it only in workflows that deliberately call the tool.

@@ -116,6 +116,15 @@ Gemini tasks do not accept `effort`.
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Override Gemini CLI command. |
 | `CODEX_AI_BRIDGE_GEMINI_SANDBOX` | Set to `1` to pass Gemini sandbox options. |
 | `CODEX_AI_BRIDGE_ALLOW_AGENTIC` | Set to `1` to allow `agentic` policy. |
+| `CODEX_AI_BRIDGE_PROVIDER_LOCK` | Defaults to enabled. Set to `0` to allow concurrent calls to the same provider across sessions. |
+| `CODEX_AI_BRIDGE_LOCK_DIR` | Override the cross-process provider lock directory. |
+| `CODEX_AI_BRIDGE_LOCK_WAIT_MS` | Maximum time to wait for a provider lock. Defaults to the task timeout. |
+| `CODEX_AI_BRIDGE_LOCK_STALE_MS` | Age after which a provider lock is considered stale. |
+
+Provider locks prevent multiple Codex sessions from invoking the same external
+provider CLI at the same time. This avoids common Claude/Gemini CLI session,
+quota, and local state collisions while still allowing Claude and Gemini to run
+in parallel with each other.
 
 ## Example
 

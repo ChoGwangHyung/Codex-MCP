@@ -1,0 +1,57 @@
+"use strict";
+
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+
+const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-hook-install-"));
+const configFile = path.join(tempDir, "config.toml");
+process.env.CODEX_TELEGRAM_PERMISSION_HOOK_CONFIG_FILE = configFile;
+process.env.CODEX_TELEGRAM_PERMISSION_HOOK_COMMAND = "node hook.js";
+process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
+process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
+process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
+
+const {
+  ensureCodexHooksFeature,
+  ensurePermissionHookInstalled,
+  maybeInstallPermissionHook,
+  permissionHookStatus,
+  removeManagedHookBlock
+} = require("../src/hook-install.js");
+
+assert.equal(
+  ensureCodexHooksFeature("model = \"gpt-5\"\n").trimEnd(),
+  "model = \"gpt-5\"\n\n[features]\ncodex_hooks = true"
+);
+
+assert.equal(
+  ensureCodexHooksFeature("[features]\nfoo = true\n[projects.x]\ntrust_level = \"trusted\"\n"),
+  "[features]\ncodex_hooks = true\nfoo = true\n[projects.x]\ntrust_level = \"trusted\""
+);
+
+assert.equal(
+  ensureCodexHooksFeature("[features]\ncodex_hooks = false\n"),
+  "[features]\ncodex_hooks = true"
+);
+
+const first = ensurePermissionHookInstalled();
+assert.equal(first.installed, true);
+assert.equal(first.changed, true);
+const installed = fs.readFileSync(configFile, "utf8");
+assert.match(installed, /\[features]/);
+assert.match(installed, /codex_hooks = true/);
+assert.match(installed, /\[\[hooks\.PermissionRequest]]/);
+assert.match(installed, /node hook\.js/);
+
+const second = ensurePermissionHookInstalled();
+assert.equal(second.installed, true);
+assert.equal(second.changed, false);
+assert.equal(permissionHookStatus().installed, true);
+
+const cleaned = removeManagedHookBlock(installed);
+assert.doesNotMatch(cleaned, /codex-telegram-bridge-mcp permission hook/);
+
+const maybe = maybeInstallPermissionHook();
+assert.equal(maybe.installed, true);
