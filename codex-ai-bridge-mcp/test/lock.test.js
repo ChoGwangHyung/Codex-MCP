@@ -22,14 +22,61 @@ assert.equal(DEFAULT_TIMEOUT_MS, 600000);
   const first = await acquireProviderLock("claude", 1000);
   assert.ok(fs.existsSync(providerLockPath("claude")));
 
-  const old = new Date(Date.now() - 5000);
+  await assert.rejects(
+    () => acquireProviderLock("claude", 1000),
+    /timed out waiting for claude provider lock/
+  );
+  releaseProviderLock(first);
+  assert.equal(fs.existsSync(providerLockPath("claude")), false);
+
+  const old = new Date(Date.now() - 15000);
+  fs.mkdirSync(providerLockPath("claude"));
+  fs.writeFileSync(path.join(providerLockPath("claude"), "owner.json"), JSON.stringify({
+    ownerId: "stale-reused-pid",
+    pid: process.pid,
+    provider: "claude",
+    createdAt: new Date(Date.now() - 15000).toISOString()
+  }));
+  fs.utimesSync(providerLockPath("claude"), old, old);
+
+  const stalePidReuse = await acquireProviderLock("claude", 2000);
+  assert.ok(fs.existsSync(providerLockPath("claude")));
+  releaseProviderLock(stalePidReuse);
+  assert.equal(fs.existsSync(providerLockPath("claude")), false);
+
+  fs.mkdirSync(providerLockPath("claude"));
+  fs.writeFileSync(path.join(providerLockPath("claude"), "owner.json"), JSON.stringify({
+    ownerId: "dead-owner",
+    pid: 999999,
+    provider: "claude",
+    createdAt: new Date(Date.now() - 15000).toISOString()
+  }));
   fs.utimesSync(providerLockPath("claude"), old, old);
 
   const second = await acquireProviderLock("claude", 2000);
   assert.ok(fs.existsSync(providerLockPath("claude")));
 
+  const replacementDir = providerLockPath("claude");
+  fs.rmSync(replacementDir, { recursive: true, force: true });
+  fs.mkdirSync(replacementDir);
+  fs.writeFileSync(path.join(replacementDir, "owner.json"), JSON.stringify({
+    ownerId: "replacement",
+    pid: process.pid,
+    provider: "claude",
+    createdAt: new Date().toISOString()
+  }));
+
   releaseProviderLock(first);
   assert.ok(fs.existsSync(providerLockPath("claude")));
+
+  fs.rmSync(replacementDir, { recursive: true, force: true });
+  fs.mkdirSync(replacementDir);
+  fs.utimesSync(replacementDir, old, old);
+
+  const orphanReplacement = await acquireProviderLock("claude", 2000);
+  assert.ok(fs.existsSync(providerLockPath("claude")));
+  releaseProviderLock(orphanReplacement);
+  assert.equal(fs.existsSync(providerLockPath("claude")), false);
 
   releaseProviderLock(second);
   assert.equal(fs.existsSync(providerLockPath("claude")), false);

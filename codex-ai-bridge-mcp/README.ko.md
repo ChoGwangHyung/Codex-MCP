@@ -127,7 +127,10 @@ Gemini 작업은 `effort`를 받지 않습니다.
 Provider lock은 여러 Codex 세션이 같은 외부 provider CLI를 동시에 실행하지 않게
 합니다. Claude/Gemini CLI의 세션, quota, 로컬 상태 충돌을 줄이면서도 Claude와
 Gemini 서로 다른 provider는 병렬 실행됩니다. 기본 task timeout은 활성 provider
-호출을 기다리는 세션이 너무 빨리 실패하지 않도록 길게 잡혀 있습니다.
+호출을 기다리는 세션이 너무 빨리 실패하지 않도록 길게 잡혀 있습니다. 활성 lock은
+heartbeat로 갱신하고, 죽은 owner process의 lock은 정리하며, Windows에서 timeout된
+provider 호출은 process tree를 종료해 bridge lock 해제 뒤 Claude/Gemini 자식
+process가 남지 않게 합니다.
 
 ## 예시
 

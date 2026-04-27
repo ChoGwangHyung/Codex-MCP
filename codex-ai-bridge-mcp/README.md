@@ -127,7 +127,9 @@ provider CLI at the same time. This avoids common Claude/Gemini CLI session,
 quota, and local state collisions while still allowing Claude and Gemini to run
 in parallel with each other. The default task timeout is intentionally long
 enough for queued sessions to wait for an active provider call instead of
-failing quickly.
+failing quickly. Active locks are heartbeated, dead owner processes are cleaned
+up, and timed-out Windows provider calls terminate the process tree to avoid
+leaving Claude/Gemini children running after the bridge releases its lock.
 
 ## Example
 

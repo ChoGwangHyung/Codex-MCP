@@ -27,6 +27,7 @@ function runCommand(command, args, options) {
     let stdout = "";
     let stderr = "";
     let finished = false;
+    let timedOut = false;
     const child = spawnCommand(command, args, {
       cwd: options.cwd,
       env: process.env,
@@ -35,7 +36,10 @@ function runCommand(command, args, options) {
       stdio: ["pipe", "pipe", "pipe"]
     });
     const timer = setTimeout(() => {
-      if (!finished) child.kill("SIGTERM");
+      if (!finished) {
+        timedOut = true;
+        terminateChild(child);
+      }
     }, options.timeoutMs);
     child.stdout.on("data", (chunk) => { stdout = appendCapped(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = appendCapped(stderr, chunk); });
@@ -43,16 +47,47 @@ function runCommand(command, args, options) {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
-      resolve({ ok: false, exitCode: null, stdout, stderr, error: error.message, timedOut: false });
+      resolve({ ok: false, exitCode: null, stdout, stderr, error: error.message, timedOut });
     });
     child.on("close", (exitCode, signal) => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
-      resolve({ ok: exitCode === 0 && signal !== "SIGTERM", exitCode, stdout, stderr, error: null, timedOut: signal === "SIGTERM" });
+      resolve({ ok: exitCode === 0 && !timedOut && signal !== "SIGTERM", exitCode, stdout, stderr, error: null, timedOut: timedOut || signal === "SIGTERM" });
     });
     child.stdin.end(options.input || "");
   });
+}
+
+function terminateChild(child) {
+  if (!child || !child.pid) return;
+  if (os.platform() === "win32") {
+    const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+      windowsHide: true,
+      stdio: "ignore"
+    });
+    const fallback = setTimeout(() => {
+      child.kill("SIGTERM");
+    }, 1000);
+    if (typeof fallback.unref === "function") fallback.unref();
+    killer.on("error", () => {
+      clearTimeout(fallback);
+      killChild(child);
+    });
+    killer.on("close", (exitCode) => {
+      if (exitCode === 0) clearTimeout(fallback);
+    });
+    return;
+  }
+  killChild(child);
+}
+
+function killChild(child) {
+  try {
+    child.kill("SIGTERM");
+  } catch {
+    // The process may already be gone.
+  }
 }
 
 function appendCapped(current, chunk) {
@@ -62,5 +97,6 @@ function appendCapped(current, chunk) {
 }
 
 module.exports = {
-  runCommand
+  runCommand,
+  terminateChild
 };
