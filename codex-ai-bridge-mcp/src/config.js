@@ -26,13 +26,14 @@ function normalizeTimeout(value, fallback, minimum = MIN_TASK_TIMEOUT_MS, maximu
 }
 
 function normalizeSyncBudget(value, timeoutMs, background) {
-  if (background) return 0;
+  if (background) return -1;
   const fallback = timeoutMs > 0 ? Math.min(DEFAULT_SYNC_BUDGET_MS, timeoutMs) : DEFAULT_SYNC_BUDGET_MS;
   if (value === undefined || value === null) return fallback;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_SYNC_BUDGET_MS) {
     throw new Error("syncBudgetMs is outside the supported range");
   }
+  if (parsed === 0) return 0;
   return timeoutMs > 0 ? Math.min(parsed, timeoutMs) : parsed;
 }
 

@@ -103,13 +103,17 @@ function respondError(id, code, message, data) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, error: { code, message, data } })}\n`);
 }
 
+function notify(method, params) {
+  process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", method, params })}\n`);
+}
+
 function textResult(text, isError = false) {
   return { content: [{ type: "text", text }], isError };
 }
 
-async function callTool(name, args) {
-  if (name === "claude_task") return textResult(await askProvider("claude", args));
-  if (name === "gemini_task") return textResult(await askProvider("gemini", args));
+async function callTool(name, args, context = {}) {
+  if (name === "claude_task") return textResult(await askProvider("claude", args, context));
+  if (name === "gemini_task") return textResult(await askProvider("gemini", args, context));
   if (name === "cross_review") {
     if (args && Object.prototype.hasOwnProperty.call(args, "effort")) {
       throw new Error("cross_review does not support effort. Use claude_task for Claude effort control.");
@@ -117,7 +121,7 @@ async function callTool(name, args) {
     const providers = Array.isArray(args && args.providers) && args.providers.length ? args.providers : ["claude", "gemini"];
     const unique = [...new Set(providers)].filter((provider) => provider === "claude" || provider === "gemini");
     if (unique.length === 0) throw new Error("providers must include claude or gemini");
-    const results = await Promise.all(unique.map((provider) => askProvider(provider, args)));
+    const results = await Promise.all(unique.map((provider) => askProvider(provider, args, context)));
     return textResult(results.join("\n\n---\n\n"));
   }
   if (name === "ai_bridge_job") return textResult(jobStatus(args || {}));
@@ -137,7 +141,11 @@ async function handleMessage(message) {
   if (message.method === "tools/list") return { tools };
   if (message.method === "tools/call") {
     const params = message.params || {};
-    return callTool(params.name, params.arguments || {});
+    const meta = params._meta || {};
+    return callTool(params.name, params.arguments || {}, {
+      progressToken: meta.progressToken,
+      notify
+    });
   }
   throw Object.assign(new Error(`method not found: ${message.method}`), { code: -32601 });
 }

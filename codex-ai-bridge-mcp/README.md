@@ -115,7 +115,7 @@ Gemini tasks do not accept `effort`.
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | Default Claude effort. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns. Use `1` for one-shot gates. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Hard provider timeout. Defaults to `0`, which leaves long jobs alive until the provider exits. |
-| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `100000` ms. |
+| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `100000` ms. Set to `0` to wait until the provider exits. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | Interval for updating running job liveness status. Defaults to `300000` ms. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | How long completed in-memory jobs are retained. Defaults to one hour. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Override Gemini CLI command. |
@@ -135,13 +135,15 @@ other project. Active locks are heartbeated, dead owner processes are cleaned
 up, and timed-out Windows provider calls terminate the process tree to avoid
 leaving Claude/Gemini children running after the bridge releases its lock.
 
-Long provider calls are kept below common MCP client tool limits by a foreground
-sync budget, not by killing the provider. If a task is still running when
-`syncBudgetMs` is reached, the tool returns a `jobId` and the provider continues
-in the background. Poll it with `ai_bridge_job`; running jobs include
-`lastCheckedAt`, `elapsedMs`, and the check interval. Set `"background": true`
-to return a `jobId` immediately. Use `timeoutMs` only when you want a hard
-provider kill deadline; `0` disables that deadline.
+Long provider calls are controlled by a foreground sync budget, not by killing
+the provider. If `syncBudgetMs` is `0`, the tool waits until the provider exits
+and sends MCP progress notifications at the job check interval when the client
+provides a progress token. If a positive `syncBudgetMs` is reached first, the
+tool returns a `jobId` and the provider continues in the background. Poll it
+with `ai_bridge_job`; running jobs include `lastCheckedAt`, `elapsedMs`, and the
+check interval. Set `"background": true` to return a `jobId` immediately. Use
+`timeoutMs` only when you want a hard provider kill deadline; `0` disables that
+deadline.
 
 ## Example
 
@@ -150,7 +152,7 @@ provider kill deadline; `0` disables that deadline.
   "role": "reviewer",
   "policy": "advisory",
   "prompt": "Review the pending diff for correctness risks. Findings first.",
-  "syncBudgetMs": 100000
+  "syncBudgetMs": 0
 }
 ```
 

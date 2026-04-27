@@ -27,6 +27,16 @@ function delay(ms) {
   assert.equal(await waitForJob(slow, 1000), true);
   assert.equal(formatJobStatus(slow.jobId), "claude result:\ndone");
 
+  const noBudgetLimit = startJob("claude", {
+    cwd: process.cwd(),
+    timeoutMs: 0
+  }, async () => {
+    await delay(50);
+    return "claude result:\nwaited";
+  });
+  assert.equal(await waitForJob(noBudgetLimit, 0), true);
+  assert.equal(formatJobStatus(noBudgetLimit.jobId), "claude result:\nwaited");
+
   const failed = startJob("gemini", {
     cwd: process.cwd(),
     timeoutMs: 10000

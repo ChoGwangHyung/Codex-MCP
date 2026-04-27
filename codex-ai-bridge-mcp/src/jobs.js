@@ -47,13 +47,23 @@ function startJob(provider, args, run) {
   return job;
 }
 
-async function waitForJob(job, waitMs) {
+async function waitForJob(job, waitMs, options = {}) {
   if (!job || job.status !== "running") return true;
-  if (!Number.isInteger(waitMs) || waitMs <= 0) return false;
-  return Promise.race([
-    job.promise.then(() => true),
-    delay(waitMs).then(() => false)
-  ]);
+  if (!Number.isInteger(waitMs) || waitMs < 0) return false;
+  const deadline = waitMs === 0 ? Number.POSITIVE_INFINITY : Date.now() + waitMs;
+  while (job.status === "running") {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return false;
+    const sleepMs = Math.min(job.checkIntervalMs, remainingMs);
+    const completed = await Promise.race([
+      job.promise.then(() => true),
+      delay(sleepMs).then(() => false)
+    ]);
+    if (completed) return true;
+    markJobChecked(job);
+    if (typeof options.onProgress === "function") options.onProgress(job);
+  }
+  return true;
 }
 
 function getJob(jobId) {
@@ -126,7 +136,10 @@ function markJobChecked(job, details = {}) {
 }
 
 function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (typeof timer.unref === "function") timer.unref();
+  });
 }
 
 module.exports = {

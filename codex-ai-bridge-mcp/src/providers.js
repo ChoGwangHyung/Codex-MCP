@@ -73,7 +73,7 @@ function providerCommand(provider, args) {
   };
 }
 
-async function askProvider(provider, rawArgs) {
+async function askProvider(provider, rawArgs, context = {}) {
   if (provider !== "claude" && rawArgs && Object.prototype.hasOwnProperty.call(rawArgs, "effort")) {
     throw new Error("effort is supported only for claude_task.");
   }
@@ -82,9 +82,20 @@ async function askProvider(provider, rawArgs) {
   const command = providerCommand(provider, args);
   const job = startJob(provider, args, (runningJob) => runProvider(provider, args, prompt, command, runningJob));
   if (args.background) return formatJobPending(job, "started in background");
-  const completed = await waitForJob(job, args.syncBudgetMs);
+  const completed = await waitForJob(job, args.syncBudgetMs, {
+    onProgress: (runningJob) => reportProgress(context, runningJob)
+  });
   if (!completed) return formatJobPending(job, `still running after ${args.syncBudgetMs}ms`);
   return formatJobStatus(job.jobId);
+}
+
+function reportProgress(context, job) {
+  if (!context || context.progressToken === undefined || context.progressToken === null || typeof context.notify !== "function") return;
+  context.notify("notifications/progress", {
+    progressToken: context.progressToken,
+    progress: Math.floor((Date.now() - Date.parse(job.startedAt)) / 1000),
+    message: `${job.provider} still running after ${Date.now() - Date.parse(job.startedAt)}ms`
+  });
 }
 
 async function runProvider(provider, args, prompt, command, job) {

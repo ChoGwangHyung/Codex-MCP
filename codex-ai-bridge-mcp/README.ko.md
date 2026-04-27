@@ -117,7 +117,7 @@ Gemini 작업은 `effort`를 받지 않습니다.
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | 기본 Claude effort입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns입니다. one-shot gate는 `1`을 권장합니다. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | provider hard timeout입니다. 기본값은 `0`이며 provider가 종료될 때까지 장시간 job을 유지합니다. |
-| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `100000` ms입니다. |
+| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `100000` ms입니다. `0`이면 provider가 종료될 때까지 기다립니다. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | 실행 중인 job liveness 상태를 갱신하는 주기입니다. 기본값은 `300000` ms입니다. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | 완료된 in-memory job을 보관하는 시간입니다. 기본값은 1시간입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Gemini CLI command override입니다. |
@@ -138,12 +138,14 @@ process tree를 종료해 bridge lock 해제 뒤 Claude/Gemini 자식 process가
 합니다.
 
 오래 걸리는 provider 호출은 provider를 죽이는 timeout이 아니라 foreground sync
-budget으로 MCP client의 일반적인 tool timeout보다 먼저 반환됩니다. 작업이
-`syncBudgetMs` 안에 끝나지 않으면 tool은 `jobId`를 반환하고 provider는
-background에서 계속 실행됩니다. 결과는 `ai_bridge_job`으로 조회합니다. 실행 중인
-job은 `lastCheckedAt`, `elapsedMs`, check interval을 함께 보여줍니다.
-`"background": true`를 주면 즉시 `jobId`를 반환합니다. `timeoutMs`는 provider를
-강제로 종료해야 하는 경우에만 쓰며, `0`이면 hard timeout을 비활성화합니다.
+budget으로 제어합니다. `syncBudgetMs`가 `0`이면 provider가 종료될 때까지 기다리고,
+client가 progress token을 제공하는 경우 job check interval마다 MCP progress
+notification을 보냅니다. 양수 `syncBudgetMs` 안에 작업이 끝나지 않으면 tool은
+`jobId`를 반환하고 provider는 background에서 계속 실행됩니다. 결과는
+`ai_bridge_job`으로 조회합니다. 실행 중인 job은 `lastCheckedAt`, `elapsedMs`,
+check interval을 함께 보여줍니다. `"background": true`를 주면 즉시 `jobId`를
+반환합니다. `timeoutMs`는 provider를 강제로 종료해야 하는 경우에만 쓰며, `0`이면
+hard timeout을 비활성화합니다.
 
 ## 예시
 
@@ -152,7 +154,7 @@ job은 `lastCheckedAt`, `elapsedMs`, check interval을 함께 보여줍니다.
   "role": "reviewer",
   "policy": "advisory",
   "prompt": "Review the pending diff for correctness risks. Findings first.",
-  "syncBudgetMs": 100000
+  "syncBudgetMs": 0
 }
 ```
 
