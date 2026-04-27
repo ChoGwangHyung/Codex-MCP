@@ -2,10 +2,12 @@
 
 const readline = require("node:readline");
 const {
+  DEFAULT_SYNC_BUDGET_MS,
   DEFAULT_ROLE,
   DEFAULT_TIMEOUT_MS,
   EFFORTS,
   MAX_HEALTH_TIMEOUT_MS,
+  MAX_SYNC_BUDGET_MS,
   MAX_TIMEOUT_MS,
   MIN_HEALTH_TIMEOUT_MS,
   MIN_TASK_TIMEOUT_MS,
@@ -14,7 +16,7 @@ const {
   SERVER_NAME,
   SERVER_VERSION
 } = require("./constants.js");
-const { askProvider, healthCheck } = require("./providers.js");
+const { askProvider, healthCheck, jobStatus } = require("./providers.js");
 const { sanitize } = require("./util.js");
 
 const tools = [
@@ -30,6 +32,9 @@ const tools = [
       default: ["claude", "gemini"]
     }
   }),
+  tool("ai_bridge_job", "Poll a background AI bridge job returned by claude_task, gemini_task, or cross_review.", {
+    jobId: { type: "string", minLength: 1 }
+  }, ["jobId"]),
   tool("ai_bridge_health", "Check whether Claude and Gemini CLIs are available.", {
     timeoutMs: { type: "integer", minimum: MIN_HEALTH_TIMEOUT_MS, maximum: MAX_HEALTH_TIMEOUT_MS, default: 10000 }
   }, [])
@@ -48,7 +53,25 @@ function taskSchema(options = {}) {
     },
     cwd: { type: "string", description: "Working directory under CODEX_AI_BRIDGE_ROOT." },
     model: { type: "string" },
-    timeoutMs: { type: "integer", minimum: MIN_TASK_TIMEOUT_MS, maximum: MAX_TIMEOUT_MS, default: DEFAULT_TIMEOUT_MS }
+    timeoutMs: {
+      type: "integer",
+      minimum: MIN_TASK_TIMEOUT_MS,
+      maximum: MAX_TIMEOUT_MS,
+      default: DEFAULT_TIMEOUT_MS,
+      description: "Hard provider timeout. Set to 0 to leave long-running jobs alive until the provider exits."
+    },
+    background: {
+      type: "boolean",
+      default: false,
+      description: "Return a job id immediately while the provider continues running in the background."
+    },
+    syncBudgetMs: {
+      type: "integer",
+      minimum: 0,
+      maximum: MAX_SYNC_BUDGET_MS,
+      default: DEFAULT_SYNC_BUDGET_MS,
+      description: "Maximum foreground wait before returning a background job id."
+    }
   };
   if (options.includeEffort) {
     properties.effort = {
@@ -97,6 +120,7 @@ async function callTool(name, args) {
     const results = await Promise.all(unique.map((provider) => askProvider(provider, args)));
     return textResult(results.join("\n\n---\n\n"));
   }
+  if (name === "ai_bridge_job") return textResult(jobStatus(args || {}));
   if (name === "ai_bridge_health") return textResult(await healthCheck(args || {}));
   throw Object.assign(new Error(`unknown tool: ${name}`), { code: -32601 });
 }

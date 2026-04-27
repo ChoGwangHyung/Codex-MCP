@@ -13,6 +13,15 @@ const { runCommand } = require("../src/runner.js");
   assert.equal(echo.stdout, "hello");
   assert.equal(echo.timedOut, false);
 
+  const noHardTimeout = await runCommand(process.execPath, ["-e", "process.stdout.write('ok')"], {
+    cwd: process.cwd(),
+    timeoutMs: 0,
+    input: ""
+  });
+  assert.equal(noHardTimeout.ok, true);
+  assert.equal(noHardTimeout.stdout, "ok");
+  assert.equal(noHardTimeout.timedOut, false);
+
   const timeout = await runCommand(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], {
     cwd: process.cwd(),
     timeoutMs: 500,

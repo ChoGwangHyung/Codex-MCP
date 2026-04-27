@@ -14,6 +14,13 @@ const {
   validateTaskArgs
 } = require("./config.js");
 const { buildPrompt } = require("./prompt.js");
+const {
+  formatJobPending,
+  formatJobStatus,
+  markJobChecked,
+  startJob,
+  waitForJob
+} = require("./jobs.js");
 const { withProviderLock } = require("./lock.js");
 const { runCommand } = require("./runner.js");
 const { sanitize, stderrSummary } = require("./util.js");
@@ -73,16 +80,32 @@ async function askProvider(provider, rawArgs) {
   const args = validateTaskArgs(rawArgs);
   const prompt = buildPrompt(args);
   const command = providerCommand(provider, args);
+  const job = startJob(provider, args, (runningJob) => runProvider(provider, args, prompt, command, runningJob));
+  if (args.background) return formatJobPending(job, "started in background");
+  const completed = await waitForJob(job, args.syncBudgetMs);
+  if (!completed) return formatJobPending(job, `still running after ${args.syncBudgetMs}ms`);
+  return formatJobStatus(job.jobId);
+}
+
+async function runProvider(provider, args, prompt, command, job) {
   const result = await withProviderLock(provider, args.timeoutMs, () => runCommand(command.command, command.args, {
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
-    input: prompt
-  }));
+    input: prompt,
+    onStart: (details) => markJobChecked(job, details)
+  }), { scope: args.cwd });
   const output = sanitize(result.stdout);
   if (result.ok) return `${provider} result:\n${output || "(no output)"}`;
   const err = result.timedOut ? `Timed out after ${args.timeoutMs}ms` : result.error || `Exited with code ${result.exitCode}`;
   const stderr = stderrSummary(result.stderr);
   return [`${provider} failed: ${err}`, stderr ? `stderr summary:\n${stderr}` : null, output ? `partial output:\n${output.slice(-4000)}` : null].filter(Boolean).join("\n");
+}
+
+function jobStatus(rawArgs) {
+  if (!rawArgs || typeof rawArgs.jobId !== "string" || !rawArgs.jobId.trim()) {
+    throw new Error("jobId is required");
+  }
+  return formatJobStatus(rawArgs.jobId.trim());
 }
 
 async function healthCheck(rawArgs) {
@@ -98,5 +121,6 @@ async function healthCheck(rawArgs) {
 
 module.exports = {
   askProvider,
-  healthCheck
+  healthCheck,
+  jobStatus
 };

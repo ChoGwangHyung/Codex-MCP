@@ -12,6 +12,7 @@ Korean documentation: [README.ko.md](README.ko.md)
 | `claude_task` | Ask Claude Code for a one-shot advisory task. |
 | `gemini_task` | Ask Gemini CLI for a one-shot advisory task. |
 | `cross_review` | Ask Claude and Gemini in parallel and return both responses. |
+| `ai_bridge_job` | Poll a background job returned by a long provider task. |
 | `ai_bridge_health` | Check whether provider CLIs are available. |
 
 Typical uses:
@@ -113,23 +114,34 @@ Gemini tasks do not accept `effort`.
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | Default Claude model. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | Default Claude effort. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns. Use `1` for one-shot gates. |
-| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Default task timeout. Defaults to `600000` ms. |
+| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Hard provider timeout. Defaults to `0`, which leaves long jobs alive until the provider exits. |
+| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `100000` ms. |
+| `CODEX_AI_BRIDGE_JOB_CHECK_MS` | Interval for updating running job liveness status. Defaults to `300000` ms. |
+| `CODEX_AI_BRIDGE_JOB_TTL_MS` | How long completed in-memory jobs are retained. Defaults to one hour. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Override Gemini CLI command. |
 | `CODEX_AI_BRIDGE_GEMINI_SANDBOX` | Set to `1` to pass Gemini sandbox options. |
 | `CODEX_AI_BRIDGE_ALLOW_AGENTIC` | Set to `1` to allow `agentic` policy. |
-| `CODEX_AI_BRIDGE_PROVIDER_LOCK` | Defaults to enabled. Set to `0` to allow concurrent calls to the same provider across sessions. |
+| `CODEX_AI_BRIDGE_PROVIDER_LOCK` | Defaults to enabled. Set to `0` to disable provider locks. |
+| `CODEX_AI_BRIDGE_LOCK_SCOPE` | Defaults to `workspace`. Set to `global` for the old provider-wide lock behavior. |
 | `CODEX_AI_BRIDGE_LOCK_DIR` | Override the cross-process provider lock directory. |
-| `CODEX_AI_BRIDGE_LOCK_WAIT_MS` | Maximum time to wait for a provider lock. Defaults to the task timeout. |
+| `CODEX_AI_BRIDGE_LOCK_WAIT_MS` | Maximum time to wait for a provider lock. Defaults to 24 hours when no hard timeout is set. |
 | `CODEX_AI_BRIDGE_LOCK_STALE_MS` | Age after which a provider lock is considered stale. |
 
-Provider locks prevent multiple Codex sessions from invoking the same external
-provider CLI at the same time. This avoids common Claude/Gemini CLI session,
-quota, and local state collisions while still allowing Claude and Gemini to run
-in parallel with each other. The default task timeout is intentionally long
-enough for queued sessions to wait for an active provider call instead of
-failing quickly. Active locks are heartbeated, dead owner processes are cleaned
+Provider locks prevent multiple Codex sessions in the same workspace from
+invoking the same external provider CLI at the same time. Different workspaces
+use different lock keys by default, so two projects can ask Claude or Gemini at
+the same time without one session spending its MCP tool budget waiting for the
+other project. Active locks are heartbeated, dead owner processes are cleaned
 up, and timed-out Windows provider calls terminate the process tree to avoid
 leaving Claude/Gemini children running after the bridge releases its lock.
+
+Long provider calls are kept below common MCP client tool limits by a foreground
+sync budget, not by killing the provider. If a task is still running when
+`syncBudgetMs` is reached, the tool returns a `jobId` and the provider continues
+in the background. Poll it with `ai_bridge_job`; running jobs include
+`lastCheckedAt`, `elapsedMs`, and the check interval. Set `"background": true`
+to return a `jobId` immediately. Use `timeoutMs` only when you want a hard
+provider kill deadline; `0` disables that deadline.
 
 ## Example
 
@@ -137,7 +149,16 @@ leaving Claude/Gemini children running after the bridge releases its lock.
 {
   "role": "reviewer",
   "policy": "advisory",
-  "prompt": "Review the pending diff for correctness risks. Findings first."
+  "prompt": "Review the pending diff for correctness risks. Findings first.",
+  "syncBudgetMs": 100000
+}
+```
+
+If that call returns a background job id, poll it with:
+
+```json
+{
+  "jobId": "claude-..."
 }
 ```
 

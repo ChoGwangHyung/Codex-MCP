@@ -3,8 +3,10 @@
 const path = require("node:path");
 const {
   DEFAULT_ROLE,
+  DEFAULT_SYNC_BUDGET_MS,
   DEFAULT_TIMEOUT_MS,
   EFFORTS,
+  MAX_SYNC_BUDGET_MS,
   MAX_TIMEOUT_MS,
   MIN_TASK_TIMEOUT_MS,
   MODEL_RE,
@@ -21,6 +23,17 @@ function normalizeTimeout(value, fallback, minimum = MIN_TASK_TIMEOUT_MS, maximu
     throw new Error("timeoutMs is outside the supported range");
   }
   return parsed;
+}
+
+function normalizeSyncBudget(value, timeoutMs, background) {
+  if (background) return 0;
+  const fallback = timeoutMs > 0 ? Math.min(DEFAULT_SYNC_BUDGET_MS, timeoutMs) : DEFAULT_SYNC_BUDGET_MS;
+  if (value === undefined || value === null) return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_SYNC_BUDGET_MS) {
+    throw new Error("syncBudgetMs is outside the supported range");
+  }
+  return timeoutMs > 0 ? Math.min(parsed, timeoutMs) : parsed;
 }
 
 function resolveCwd(cwd) {
@@ -56,6 +69,8 @@ function validateTaskArgs(args) {
   if (policy === "agentic" && process.env.CODEX_AI_BRIDGE_ALLOW_AGENTIC !== "1") {
     throw new Error("agentic policy is disabled. Set CODEX_AI_BRIDGE_ALLOW_AGENTIC=1 to enable it explicitly.");
   }
+  const timeoutMs = normalizeTimeout(args.timeoutMs, DEFAULT_TIMEOUT_MS);
+  const background = args.background === true;
   return {
     ...args,
     prompt: args.prompt.trim(),
@@ -64,7 +79,9 @@ function validateTaskArgs(args) {
     cwd: resolveCwd(args.cwd),
     model: validateModel(args.model),
     effort: validateEffort(args.effort),
-    timeoutMs: normalizeTimeout(args.timeoutMs, DEFAULT_TIMEOUT_MS)
+    timeoutMs,
+    background,
+    syncBudgetMs: normalizeSyncBudget(args.syncBudgetMs, timeoutMs, background)
   };
 }
 
@@ -81,6 +98,7 @@ function envJsonArray(name) {
 module.exports = {
   repoRoot,
   normalizeTimeout,
+  normalizeSyncBudget,
   resolveCwd,
   validateModel,
   validateEffort,

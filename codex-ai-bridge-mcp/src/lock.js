@@ -1,19 +1,22 @@
 "use strict";
 
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 
 const DEFAULT_LOCK_STALE_MS = 30 * 60 * 1000;
+const DEFAULT_LOCK_WAIT_MS = 24 * 60 * 60 * 1000;
 const ORPHAN_LOCK_GRACE_MS = 10 * 1000;
 
 function providerLocksEnabled() {
-  return process.env.CODEX_AI_BRIDGE_PROVIDER_LOCK !== "0";
+  const value = String(process.env.CODEX_AI_BRIDGE_PROVIDER_LOCK || "").toLowerCase();
+  return value !== "0" && value !== "false" && value !== "none";
 }
 
-async function withProviderLock(provider, timeoutMs, work) {
+async function withProviderLock(provider, timeoutMs, work, options = {}) {
   if (!providerLocksEnabled()) return work();
-  const lock = await acquireProviderLock(provider, timeoutMs);
+  const lock = await acquireProviderLock(provider, timeoutMs, options.scope);
   startLockHeartbeat(lock);
   try {
     return await work();
@@ -22,8 +25,8 @@ async function withProviderLock(provider, timeoutMs, work) {
   }
 }
 
-async function acquireProviderLock(provider, timeoutMs) {
-  const dir = providerLockPath(provider);
+async function acquireProviderLock(provider, timeoutMs, scope) {
+  const dir = providerLockPath(provider, scope);
   const deadline = Date.now() + lockWaitMs(timeoutMs);
   const ownerId = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   fs.mkdirSync(path.dirname(dir), { recursive: true });
@@ -42,6 +45,7 @@ async function acquireProviderLock(provider, timeoutMs) {
       ownerId,
       pid: process.pid,
       provider,
+      scope: lockScopeLabel(scope),
       createdAt: new Date().toISOString()
     });
     return { dir, ownerId };
@@ -56,15 +60,32 @@ function releaseProviderLock(lock) {
   fs.rmSync(lock.dir, { recursive: true, force: true });
 }
 
-function providerLockPath(provider) {
+function providerLockPath(provider, scope) {
   const base = process.env.CODEX_AI_BRIDGE_LOCK_DIR ||
     path.join(os.tmpdir(), "codex-ai-bridge-mcp-locks");
-  return path.join(base, safeLockName(provider));
+  const providerName = safeLockName(provider);
+  const scopeName = lockScopeName(scope);
+  const lockName = scopeName === "global" ? providerName : `${providerName}-${scopeName}`;
+  return path.join(base, lockName);
+}
+
+function lockScopeName(scope) {
+  const label = lockScopeLabel(scope);
+  if (label === "global") return "global";
+  return `workspace-${crypto.createHash("sha256").update(label).digest("hex").slice(0, 16)}`;
+}
+
+function lockScopeLabel(scope) {
+  const configured = String(process.env.CODEX_AI_BRIDGE_LOCK_SCOPE || "workspace").toLowerCase();
+  if (configured === "global" || configured === "provider") return "global";
+  if (configured && configured !== "workspace") return configured;
+  return String(scope || process.env.CODEX_AI_BRIDGE_ROOT || process.cwd());
 }
 
 function lockWaitMs(timeoutMs) {
   const configured = Number(process.env.CODEX_AI_BRIDGE_LOCK_WAIT_MS);
-  if (Number.isInteger(configured) && configured >= 1000) return configured;
+  if (Number.isInteger(configured) && configured >= 0) return configured;
+  if (!Number.isInteger(Number(timeoutMs)) || Number(timeoutMs) <= 0) return DEFAULT_LOCK_WAIT_MS;
   return Math.max(1000, Number(timeoutMs || 0));
 }
 

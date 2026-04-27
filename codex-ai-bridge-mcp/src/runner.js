@@ -35,28 +35,40 @@ function runCommand(command, args, options) {
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"]
     });
-    const timer = setTimeout(() => {
-      if (!finished) {
-        timedOut = true;
-        terminateChild(child);
-      }
-    }, options.timeoutMs);
+    if (typeof options.onStart === "function") options.onStart({ pid: child.pid });
+    const timer = providerTimeoutMs(options.timeoutMs) > 0
+      ? setTimeout(() => {
+        if (!finished) {
+          timedOut = true;
+          terminateChild(child);
+        }
+      }, providerTimeoutMs(options.timeoutMs))
+      : null;
     child.stdout.on("data", (chunk) => { stdout = appendCapped(stdout, chunk); });
     child.stderr.on("data", (chunk) => { stderr = appendCapped(stderr, chunk); });
     child.on("error", (error) => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer);
+      clearTimer(timer);
       resolve({ ok: false, exitCode: null, stdout, stderr, error: error.message, timedOut });
     });
     child.on("close", (exitCode, signal) => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer);
+      clearTimer(timer);
       resolve({ ok: exitCode === 0 && !timedOut && signal !== "SIGTERM", exitCode, stdout, stderr, error: null, timedOut: timedOut || signal === "SIGTERM" });
     });
     child.stdin.end(options.input || "");
   });
+}
+
+function providerTimeoutMs(value) {
+  const timeoutMs = Number(value);
+  return Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 0;
+}
+
+function clearTimer(timer) {
+  if (timer) clearTimeout(timer);
 }
 
 function terminateChild(child) {
@@ -98,5 +110,6 @@ function appendCapped(current, chunk) {
 
 module.exports = {
   runCommand,
-  terminateChild
+  terminateChild,
+  providerTimeoutMs
 };

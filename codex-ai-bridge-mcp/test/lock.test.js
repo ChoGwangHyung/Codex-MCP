@@ -16,7 +16,7 @@ const {
 } = require("../src/lock.js");
 const { DEFAULT_TIMEOUT_MS } = require("../src/constants.js");
 
-assert.equal(DEFAULT_TIMEOUT_MS, 600000);
+assert.equal(DEFAULT_TIMEOUT_MS, 0);
 
 (async () => {
   const first = await acquireProviderLock("claude", 1000);
@@ -28,6 +28,20 @@ assert.equal(DEFAULT_TIMEOUT_MS, 600000);
   );
   releaseProviderLock(first);
   assert.equal(fs.existsSync(providerLockPath("claude")), false);
+
+  const scopedA = await acquireProviderLock("claude", 1000, "workspace-a");
+  const scopedB = await acquireProviderLock("claude", 1000, "workspace-b");
+  assert.notEqual(providerLockPath("claude", "workspace-a"), providerLockPath("claude", "workspace-b"));
+  assert.ok(fs.existsSync(providerLockPath("claude", "workspace-a")));
+  assert.ok(fs.existsSync(providerLockPath("claude", "workspace-b")));
+  await assert.rejects(
+    () => acquireProviderLock("claude", 1000, "workspace-a"),
+    /timed out waiting for claude provider lock/
+  );
+  releaseProviderLock(scopedA);
+  releaseProviderLock(scopedB);
+  assert.equal(fs.existsSync(providerLockPath("claude", "workspace-a")), false);
+  assert.equal(fs.existsSync(providerLockPath("claude", "workspace-b")), false);
 
   const old = new Date(Date.now() - 15000);
   fs.mkdirSync(providerLockPath("claude"));

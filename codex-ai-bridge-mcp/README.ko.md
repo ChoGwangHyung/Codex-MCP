@@ -14,6 +14,7 @@ Codex 프로세스에 섞지 않고, 계획·리뷰·QA 같은 보조 판단을 
 | `claude_task` | Claude Code에 one-shot 자문 작업을 요청합니다. |
 | `gemini_task` | Gemini CLI에 one-shot 자문 작업을 요청합니다. |
 | `cross_review` | Claude와 Gemini를 병렬 호출하고 두 결과를 함께 반환합니다. |
+| `ai_bridge_job` | 오래 걸리는 provider 작업이 반환한 background job을 조회합니다. |
 | `ai_bridge_health` | provider CLI 사용 가능 여부를 확인합니다. |
 
 주요 사용 예:
@@ -115,22 +116,34 @@ Gemini 작업은 `effort`를 받지 않습니다.
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | 기본 Claude 모델입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | 기본 Claude effort입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns입니다. one-shot gate는 `1`을 권장합니다. |
-| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | 기본 task timeout입니다. 기본값은 `600000` ms입니다. |
+| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | provider hard timeout입니다. 기본값은 `0`이며 provider가 종료될 때까지 장시간 job을 유지합니다. |
+| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `100000` ms입니다. |
+| `CODEX_AI_BRIDGE_JOB_CHECK_MS` | 실행 중인 job liveness 상태를 갱신하는 주기입니다. 기본값은 `300000` ms입니다. |
+| `CODEX_AI_BRIDGE_JOB_TTL_MS` | 완료된 in-memory job을 보관하는 시간입니다. 기본값은 1시간입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Gemini CLI command override입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_SANDBOX` | `1`이면 Gemini sandbox 옵션을 전달합니다. |
 | `CODEX_AI_BRIDGE_ALLOW_AGENTIC` | `1`이면 `agentic` 정책을 허용합니다. |
-| `CODEX_AI_BRIDGE_PROVIDER_LOCK` | 기본값은 활성화입니다. `0`이면 여러 세션의 같은 provider 동시 호출을 허용합니다. |
+| `CODEX_AI_BRIDGE_PROVIDER_LOCK` | 기본값은 활성화입니다. `0`이면 provider lock을 비활성화합니다. |
+| `CODEX_AI_BRIDGE_LOCK_SCOPE` | 기본값은 `workspace`입니다. 이전 provider-wide lock 동작이 필요하면 `global`로 설정합니다. |
 | `CODEX_AI_BRIDGE_LOCK_DIR` | cross-process provider lock 디렉터리를 override합니다. |
-| `CODEX_AI_BRIDGE_LOCK_WAIT_MS` | provider lock을 기다릴 최대 시간입니다. 기본값은 task timeout입니다. |
+| `CODEX_AI_BRIDGE_LOCK_WAIT_MS` | provider lock을 기다릴 최대 시간입니다. hard timeout이 없으면 기본값은 24시간입니다. |
 | `CODEX_AI_BRIDGE_LOCK_STALE_MS` | provider lock을 stale로 볼 기준 시간입니다. |
 
-Provider lock은 여러 Codex 세션이 같은 외부 provider CLI를 동시에 실행하지 않게
-합니다. Claude/Gemini CLI의 세션, quota, 로컬 상태 충돌을 줄이면서도 Claude와
-Gemini 서로 다른 provider는 병렬 실행됩니다. 기본 task timeout은 활성 provider
-호출을 기다리는 세션이 너무 빨리 실패하지 않도록 길게 잡혀 있습니다. 활성 lock은
-heartbeat로 갱신하고, 죽은 owner process의 lock은 정리하며, Windows에서 timeout된
-provider 호출은 process tree를 종료해 bridge lock 해제 뒤 Claude/Gemini 자식
-process가 남지 않게 합니다.
+Provider lock은 같은 workspace의 여러 Codex 세션이 같은 외부 provider CLI를 동시에
+실행하지 않게 합니다. 서로 다른 workspace는 기본적으로 다른 lock key를 사용하므로,
+두 프로젝트가 Claude나 Gemini를 동시에 호출해도 한 세션이 다른 프로젝트 작업을
+기다리느라 MCP tool budget을 소모하지 않습니다. 활성 lock은 heartbeat로 갱신하고,
+죽은 owner process의 lock은 정리하며, Windows에서 timeout된 provider 호출은
+process tree를 종료해 bridge lock 해제 뒤 Claude/Gemini 자식 process가 남지 않게
+합니다.
+
+오래 걸리는 provider 호출은 provider를 죽이는 timeout이 아니라 foreground sync
+budget으로 MCP client의 일반적인 tool timeout보다 먼저 반환됩니다. 작업이
+`syncBudgetMs` 안에 끝나지 않으면 tool은 `jobId`를 반환하고 provider는
+background에서 계속 실행됩니다. 결과는 `ai_bridge_job`으로 조회합니다. 실행 중인
+job은 `lastCheckedAt`, `elapsedMs`, check interval을 함께 보여줍니다.
+`"background": true`를 주면 즉시 `jobId`를 반환합니다. `timeoutMs`는 provider를
+강제로 종료해야 하는 경우에만 쓰며, `0`이면 hard timeout을 비활성화합니다.
 
 ## 예시
 
@@ -138,7 +151,16 @@ process가 남지 않게 합니다.
 {
   "role": "reviewer",
   "policy": "advisory",
-  "prompt": "Review the pending diff for correctness risks. Findings first."
+  "prompt": "Review the pending diff for correctness risks. Findings first.",
+  "syncBudgetMs": 100000
+}
+```
+
+이 호출이 background job id를 반환하면 다음처럼 조회합니다.
+
+```json
+{
+  "jobId": "claude-..."
 }
 ```
 
