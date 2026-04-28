@@ -33,3 +33,8 @@ assert.equal(DEFAULT_SYNC_BUDGET_MS, 120000);
   assert.equal(args.syncBudgetMs, 0);
   assert.deepEqual(args.warnings, []);
 }
+
+assert.throws(
+  () => validateTaskArgs({ prompt: "x", cwd: "__missing_ai_bridge_cwd__" }, { provider: "claude" }),
+  /cwd must exist and be a directory/
+);

@@ -54,6 +54,10 @@ CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "1"
 
 Use forward slashes or escaped backslashes on Windows.
 
+Task `cwd` values are optional. If supplied, they must resolve to an existing
+directory under `CODEX_AI_BRIDGE_ROOT`. Omit `cwd` to run the provider from the
+project root.
+
 If installed globally from npm, the MCP command can be the package binary:
 
 ```toml

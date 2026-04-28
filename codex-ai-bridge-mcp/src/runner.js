@@ -13,13 +13,16 @@ function spawnCommand(command, args, options) {
     throw new Error(`Unsupported Windows command name: ${command}`);
   }
   const commandLine = [command, ...args.map(quoteCmdArg)].join(" ");
-  return spawn(comspec, ["/d", "/c", commandLine], options);
+  return spawn(comspec, ["/d", "/c", commandLine], {
+    ...options,
+    windowsVerbatimArguments: true
+  });
 }
 
 function quoteCmdArg(value) {
   const raw = String(value);
   if (!raw) return "\"\"";
-  return `"${raw.replace(/%/g, "%%").replace(/"/g, "\\\"").replace(/([&|<>^])/g, "^$1")}"`;
+  return `"${raw.replace(/%/g, "%%").replace(/"/g, "\\\"")}"`;
 }
 
 function runCommand(command, args, options) {

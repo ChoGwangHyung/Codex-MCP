@@ -56,6 +56,10 @@ CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "1"
 
 Windows에서는 forward slash 또는 escape된 backslash를 사용하세요.
 
+작업별 `cwd`는 선택값입니다. 지정할 경우 `CODEX_AI_BRIDGE_ROOT` 아래의 실제
+존재하는 디렉터리로 resolve되어야 합니다. 애매하면 `cwd`를 생략해 project root에서
+provider를 실행하세요.
+
 npm global 설치로 사용할 경우 MCP command에 package binary를 지정할 수 있습니다.
 
 ```toml

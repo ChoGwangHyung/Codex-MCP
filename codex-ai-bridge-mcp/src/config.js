@@ -1,5 +1,6 @@
 "use strict";
 
+const fs = require("node:fs");
 const path = require("node:path");
 const {
   DEFAULT_ROLE,
@@ -76,13 +77,22 @@ function syncBudgetHeadroomMs(timeoutMs) {
 }
 
 function resolveCwd(cwd) {
-  if (!cwd) return repoRoot;
+  if (!cwd) return ensureDirectory(repoRoot, "CODEX_AI_BRIDGE_ROOT");
   const resolved = path.resolve(repoRoot, cwd);
   const relative = path.relative(repoRoot, resolved);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`cwd must stay under repository root: ${repoRoot}`);
   }
-  return resolved;
+  return ensureDirectory(resolved, "cwd");
+}
+
+function ensureDirectory(value, label) {
+  try {
+    if (fs.statSync(value).isDirectory()) return value;
+  } catch {
+    // Fall through to a clearer validation error.
+  }
+  throw new Error(`${label} must exist and be a directory: ${value}`);
 }
 
 function validateModel(model) {

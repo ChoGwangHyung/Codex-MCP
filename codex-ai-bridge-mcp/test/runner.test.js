@@ -24,6 +24,29 @@ const { runCommand } = require("../src/runner.js");
   assert.equal(noHardTimeout.stdout, "ok");
   assert.equal(noHardTimeout.timedOut, false);
 
+  const bareCommandWithQuotedArgs = await runCommand("node", ["-e", "process.stdout.write(process.argv[1])", "quoted arg"], {
+    cwd: process.cwd(),
+    timeoutMs: 5000,
+    input: ""
+  });
+  assert.equal(bareCommandWithQuotedArgs.ok, true);
+  assert.equal(bareCommandWithQuotedArgs.stdout, "quoted arg");
+
+  const concurrentBareCommands = await Promise.all([
+    runCommand("node", ["-e", "setTimeout(() => process.stdout.write('a'), 100)"], {
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      input: ""
+    }),
+    runCommand("node", ["-e", "setTimeout(() => process.stdout.write('b'), 100)"], {
+      cwd: process.cwd(),
+      timeoutMs: 5000,
+      input: ""
+    })
+  ]);
+  assert.deepEqual(concurrentBareCommands.map((result) => result.ok), [true, true]);
+  assert.deepEqual(concurrentBareCommands.map((result) => result.stdout).sort(), ["a", "b"]);
+
   const timeout = await runCommand(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], {
     cwd: process.cwd(),
     timeoutMs: 500,
