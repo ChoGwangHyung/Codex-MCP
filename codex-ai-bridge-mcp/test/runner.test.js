@@ -12,6 +12,8 @@ const { runCommand } = require("../src/runner.js");
   assert.equal(echo.ok, true);
   assert.equal(echo.stdout, "hello");
   assert.equal(echo.timedOut, false);
+  assert.equal(typeof echo.pid, "number");
+  assert.equal(typeof echo.elapsedMs, "number");
 
   const noHardTimeout = await runCommand(process.execPath, ["-e", "process.stdout.write('ok')"], {
     cwd: process.cwd(),
@@ -29,6 +31,8 @@ const { runCommand } = require("../src/runner.js");
   });
   assert.equal(timeout.ok, false);
   assert.equal(timeout.timedOut, true);
+  assert.equal(typeof timeout.pid, "number");
+  assert.ok(timeout.elapsedMs >= 0);
 })().catch((error) => {
   console.error(error);
   process.exit(1);

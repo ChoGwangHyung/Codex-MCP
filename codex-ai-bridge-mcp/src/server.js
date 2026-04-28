@@ -44,6 +44,11 @@ function taskSchema(options = {}) {
   const properties = {
     prompt: { type: "string", minLength: 1 },
     context: { type: "string" },
+    preset: {
+      type: "string",
+      enum: ["review"],
+      description: "review applies Claude opus/max defaults and a 15 minute hard timeout unless overridden."
+    },
     role: { type: "string", enum: [...ROLES], default: DEFAULT_ROLE },
     policy: {
       type: "string",

@@ -107,6 +107,12 @@ low, medium, high, xhigh, max
 
 Gemini 작업은 `effort`를 받지 않습니다.
 
+## Review Preset
+
+`"preset": "review"`를 지정하면 긴 리뷰용 기본값을 사용합니다. Claude에서는 명시
+값이 없을 때 `model: "opus"`, `effort: "max"`, `timeoutMs: 900000`,
+`syncBudgetMs: 120000`을 적용합니다.
+
 ## 환경 변수
 
 | 변수 | 설명 |
@@ -116,8 +122,8 @@ Gemini 작업은 `effort`를 받지 않습니다.
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | 기본 Claude 모델입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | 기본 Claude effort입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns입니다. one-shot gate는 `1`을 권장합니다. |
-| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | provider hard timeout입니다. 기본값은 `0`이며 provider가 종료될 때까지 장시간 job을 유지합니다. |
-| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `100000` ms입니다. `0`이면 provider가 종료될 때까지 기다립니다. |
+| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | provider hard timeout입니다. 기본값은 `900000` ms입니다. `0`이면 hard timeout을 비활성화합니다. |
+| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `120000` ms입니다. `0`이면 provider가 종료될 때까지 기다립니다. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | 실행 중인 job liveness 상태를 갱신하는 주기입니다. 기본값은 `300000` ms입니다. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | 완료된 in-memory job을 보관하는 시간입니다. 기본값은 1시간입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Gemini CLI command override입니다. |
@@ -143,18 +149,19 @@ client가 progress token을 제공하는 경우 job check interval마다 MCP pro
 notification을 보냅니다. 양수 `syncBudgetMs` 안에 작업이 끝나지 않으면 tool은
 `jobId`를 반환하고 provider는 background에서 계속 실행됩니다. 결과는
 `ai_bridge_job`으로 조회합니다. 실행 중인 job은 `lastCheckedAt`, `elapsedMs`,
-check interval을 함께 보여줍니다. `"background": true`를 주면 즉시 `jobId`를
-반환합니다. `timeoutMs`는 provider를 강제로 종료해야 하는 경우에만 쓰며, `0`이면
-hard timeout을 비활성화합니다.
+check interval과 hard timeout까지 남은 시간을 함께 보여줍니다. `timeoutMs > 0`이고
+`syncBudgetMs >= timeoutMs`이면 bridge가 `syncBudgetMs`를 자동으로 낮추고 warning을
+추가해, 반환된 `jobId`를 hard timeout 전에 조회할 시간이 남게 합니다.
+`"background": true`를 주면 즉시 `jobId`를 반환합니다.
 
 ## 예시
 
 ```json
 {
+  "preset": "review",
   "role": "reviewer",
   "policy": "advisory",
-  "prompt": "Review the pending diff for correctness risks. Findings first.",
-  "syncBudgetMs": 0
+  "prompt": "Review the pending diff for correctness risks. Findings first."
 }
 ```
 

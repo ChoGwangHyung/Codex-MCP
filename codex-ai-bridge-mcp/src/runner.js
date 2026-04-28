@@ -24,6 +24,7 @@ function quoteCmdArg(value) {
 
 function runCommand(command, args, options) {
   return new Promise((resolve) => {
+    const startedAtMs = Date.now();
     let stdout = "";
     let stderr = "";
     let finished = false;
@@ -50,16 +51,29 @@ function runCommand(command, args, options) {
       if (finished) return;
       finished = true;
       clearTimer(timer);
-      resolve({ ok: false, exitCode: null, stdout, stderr, error: error.message, timedOut });
+      resolve(commandResult({ ok: false, exitCode: null, stdout, stderr, error: error.message, timedOut, child, startedAtMs }));
     });
     child.on("close", (exitCode, signal) => {
       if (finished) return;
       finished = true;
       clearTimer(timer);
-      resolve({ ok: exitCode === 0 && !timedOut && signal !== "SIGTERM", exitCode, stdout, stderr, error: null, timedOut: timedOut || signal === "SIGTERM" });
+      resolve(commandResult({ ok: exitCode === 0 && !timedOut && signal !== "SIGTERM", exitCode, stdout, stderr, error: null, timedOut: timedOut || signal === "SIGTERM", child, startedAtMs }));
     });
     child.stdin.end(options.input || "");
   });
+}
+
+function commandResult(result) {
+  return {
+    ok: result.ok,
+    exitCode: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    error: result.error,
+    timedOut: result.timedOut,
+    pid: result.child && result.child.pid ? result.child.pid : null,
+    elapsedMs: Date.now() - result.startedAtMs
+  };
 }
 
 function providerTimeoutMs(value) {

@@ -11,6 +11,9 @@ const {
   MIN_TASK_TIMEOUT_MS,
   MODEL_RE,
   POLICIES,
+  PRESETS,
+  REVIEW_SYNC_BUDGET_MS,
+  REVIEW_TIMEOUT_MS,
   ROLES
 } = require("./constants.js");
 
@@ -35,6 +38,41 @@ function normalizeSyncBudget(value, timeoutMs, background) {
   }
   if (parsed === 0) return 0;
   return timeoutMs > 0 ? Math.min(parsed, timeoutMs) : parsed;
+}
+
+function timingDefaults(args, options = {}) {
+  const preset = validatePreset(args.preset);
+  const reviewPreset = preset === "review";
+  const timeoutFallback = reviewPreset ? REVIEW_TIMEOUT_MS : DEFAULT_TIMEOUT_MS;
+  const syncBudgetFallback = reviewPreset ? REVIEW_SYNC_BUDGET_MS : DEFAULT_SYNC_BUDGET_MS;
+  const timeoutMs = normalizeTimeout(args.timeoutMs, timeoutFallback);
+  const background = args.background === true;
+  let syncBudgetMs = normalizeSyncBudgetWithFallback(args.syncBudgetMs, timeoutMs, background, syncBudgetFallback);
+  const warnings = [];
+
+  if (timeoutMs > 0 && syncBudgetMs > 0 && syncBudgetMs >= timeoutMs) {
+    const adjusted = Math.max(0, timeoutMs - syncBudgetHeadroomMs(timeoutMs));
+    warnings.push(`syncBudgetMs (${syncBudgetMs}) was adjusted to ${adjusted} because it must be lower than timeoutMs (${timeoutMs}) to leave time for background polling before the hard timeout.`);
+    syncBudgetMs = adjusted;
+  }
+
+  return { preset, timeoutMs, background, syncBudgetMs, warnings, provider: options.provider };
+}
+
+function normalizeSyncBudgetWithFallback(value, timeoutMs, background, fallback) {
+  if (background) return -1;
+  const effectiveFallback = timeoutMs > 0 ? Math.min(fallback, timeoutMs) : fallback;
+  if (value === undefined || value === null) return effectiveFallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_SYNC_BUDGET_MS) {
+    throw new Error("syncBudgetMs is outside the supported range");
+  }
+  if (parsed === 0) return 0;
+  return timeoutMs > 0 ? Math.min(parsed, timeoutMs) : parsed;
+}
+
+function syncBudgetHeadroomMs(timeoutMs) {
+  return Math.min(30000, Math.max(1000, Math.floor(timeoutMs * 0.1)));
 }
 
 function resolveCwd(cwd) {
@@ -63,26 +101,36 @@ function validateEffort(effort) {
   return effort;
 }
 
-function validateTaskArgs(args) {
+function validatePreset(preset) {
+  if (preset === undefined || preset === null || preset === "") return undefined;
+  if (typeof preset !== "string" || !PRESETS.has(preset)) {
+    throw new Error("preset must be one of: review");
+  }
+  return preset;
+}
+
+function validateTaskArgs(args, options = {}) {
   if (!args || typeof args !== "object") throw new Error("arguments object is required");
   if (typeof args.prompt !== "string" || !args.prompt.trim()) throw new Error("prompt is required");
   const policy = POLICIES.has(args.policy) ? args.policy : "advisory";
   if (policy === "agentic" && process.env.CODEX_AI_BRIDGE_ALLOW_AGENTIC !== "1") {
     throw new Error("agentic policy is disabled. Set CODEX_AI_BRIDGE_ALLOW_AGENTIC=1 to enable it explicitly.");
   }
-  const timeoutMs = normalizeTimeout(args.timeoutMs, DEFAULT_TIMEOUT_MS);
-  const background = args.background === true;
+  const timing = timingDefaults(args, options);
+  const reviewPreset = timing.preset === "review";
   return {
     ...args,
+    preset: timing.preset,
     prompt: args.prompt.trim(),
-    role: ROLES.has(args.role) ? args.role : DEFAULT_ROLE,
+    role: ROLES.has(args.role) ? args.role : (reviewPreset ? "reviewer" : DEFAULT_ROLE),
     policy,
     cwd: resolveCwd(args.cwd),
-    model: validateModel(args.model),
-    effort: validateEffort(args.effort),
-    timeoutMs,
-    background,
-    syncBudgetMs: normalizeSyncBudget(args.syncBudgetMs, timeoutMs, background)
+    model: validateModel(args.model || (reviewPreset && options.provider === "claude" ? "opus" : undefined)),
+    effort: validateEffort(args.effort || (reviewPreset && options.provider === "claude" ? "max" : undefined)),
+    timeoutMs: timing.timeoutMs,
+    background: timing.background,
+    syncBudgetMs: timing.syncBudgetMs,
+    warnings: timing.warnings
   };
 }
 
@@ -100,9 +148,11 @@ module.exports = {
   repoRoot,
   normalizeTimeout,
   normalizeSyncBudget,
+  normalizeSyncBudgetWithFallback,
   resolveCwd,
   validateModel,
   validateEffort,
+  validatePreset,
   validateTaskArgs,
   envJsonArray
 };

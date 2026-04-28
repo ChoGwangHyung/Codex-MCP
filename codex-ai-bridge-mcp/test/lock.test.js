@@ -16,7 +16,7 @@ const {
 } = require("../src/lock.js");
 const { DEFAULT_TIMEOUT_MS } = require("../src/constants.js");
 
-assert.equal(DEFAULT_TIMEOUT_MS, 0);
+assert.equal(DEFAULT_TIMEOUT_MS, 900000);
 
 (async () => {
   const first = await acquireProviderLock("claude", 1000);

@@ -105,6 +105,12 @@ Precedence:
 
 Gemini tasks do not accept `effort`.
 
+## Review Preset
+
+Set `"preset": "review"` for the default long review profile. For Claude this
+uses `model: "opus"`, `effort: "max"`, `timeoutMs: 900000`, and
+`syncBudgetMs: 120000` unless those fields are explicitly supplied.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -114,8 +120,8 @@ Gemini tasks do not accept `effort`.
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | Default Claude model. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | Default Claude effort. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns. Use `1` for one-shot gates. |
-| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Hard provider timeout. Defaults to `0`, which leaves long jobs alive until the provider exits. |
-| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `100000` ms. Set to `0` to wait until the provider exits. |
+| `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Hard provider timeout. Defaults to `900000` ms. Set to `0` to disable the hard timeout. |
+| `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `120000` ms. Set to `0` to wait until the provider exits. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | Interval for updating running job liveness status. Defaults to `300000` ms. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | How long completed in-memory jobs are retained. Defaults to one hour. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Override Gemini CLI command. |
@@ -141,18 +147,19 @@ and sends MCP progress notifications at the job check interval when the client
 provides a progress token. If a positive `syncBudgetMs` is reached first, the
 tool returns a `jobId` and the provider continues in the background. Poll it
 with `ai_bridge_job`; running jobs include `lastCheckedAt`, `elapsedMs`, and the
-check interval. Set `"background": true` to return a `jobId` immediately. Use
-`timeoutMs` only when you want a hard provider kill deadline; `0` disables that
-deadline.
+check interval plus the remaining hard timeout. When `timeoutMs > 0` and
+`syncBudgetMs >= timeoutMs`, the bridge automatically lowers `syncBudgetMs` and
+adds a warning so the returned `jobId` still has time to be polled before the
+hard timeout. Set `"background": true` to return a `jobId` immediately.
 
 ## Example
 
 ```json
 {
+  "preset": "review",
   "role": "reviewer",
   "policy": "advisory",
-  "prompt": "Review the pending diff for correctness risks. Findings first.",
-  "syncBudgetMs": 0
+  "prompt": "Review the pending diff for correctness risks. Findings first."
 }
 ```
 

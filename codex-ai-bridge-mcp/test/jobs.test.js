@@ -43,6 +43,7 @@ function delay(ms) {
   }, async () => {
     throw new Error("boom");
   });
+  assert.match(formatJobStatus(failed.jobId), /hardTimeoutRemainingMs:/);
   assert.equal(await waitForJob(failed, 1000), true);
   assert.match(formatJobStatus(failed.jobId), /gemini failed: boom/);
 })().catch((error) => {

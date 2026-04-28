@@ -7,8 +7,10 @@ const MIN_HEALTH_TIMEOUT_MS = 1000;
 const MAX_HEALTH_TIMEOUT_MS = 60000;
 const MAX_TIMEOUT_MS = 900000;
 const MAX_SYNC_BUDGET_MS = 24 * 60 * 60 * 1000;
-const DEFAULT_TIMEOUT_MS = parseDefaultTimeout(process.env.CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS, 0);
-const DEFAULT_SYNC_BUDGET_MS = parseSyncBudget(process.env.CODEX_AI_BRIDGE_SYNC_BUDGET_MS, 100000);
+const REVIEW_TIMEOUT_MS = 900000;
+const REVIEW_SYNC_BUDGET_MS = 120000;
+const DEFAULT_TIMEOUT_MS = parseDefaultTimeout(process.env.CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS, REVIEW_TIMEOUT_MS);
+const DEFAULT_SYNC_BUDGET_MS = parseSyncBudget(process.env.CODEX_AI_BRIDGE_SYNC_BUDGET_MS, REVIEW_SYNC_BUDGET_MS);
 const DEFAULT_JOB_CHECK_MS = parseJobCheckInterval(process.env.CODEX_AI_BRIDGE_JOB_CHECK_MS, 5 * 60 * 1000);
 const MAX_OUTPUT_BYTES = 240000;
 const PROMPT_ARG = "Use stdin as the complete task context. Follow the requested permission policy.";
@@ -16,6 +18,7 @@ const DEFAULT_ROLE = "reviewer";
 const ROLES = new Set(["planner", "reviewer", "security", "qa", "architecture", "refactor", "implementer"]);
 const POLICIES = new Set(["advisory", "workspace-read", "agentic"]);
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const PRESETS = new Set(["review"]);
 const MODEL_RE = /^[A-Za-z0-9._:-]{1,100}$/;
 
 function parseDefaultTimeout(value, fallback) {
@@ -47,6 +50,8 @@ module.exports = {
   MAX_HEALTH_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   MAX_SYNC_BUDGET_MS,
+  REVIEW_TIMEOUT_MS,
+  REVIEW_SYNC_BUDGET_MS,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_SYNC_BUDGET_MS,
   DEFAULT_JOB_CHECK_MS,
@@ -56,5 +61,6 @@ module.exports = {
   ROLES,
   POLICIES,
   EFFORTS,
+  PRESETS,
   MODEL_RE
 };

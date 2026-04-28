@@ -23,7 +23,7 @@ const {
 } = require("./jobs.js");
 const { withProviderLock } = require("./lock.js");
 const { runCommand } = require("./runner.js");
-const { sanitize, stderrSummary } = require("./util.js");
+const { sanitize } = require("./util.js");
 
 function providerCommand(provider, args) {
   if (provider === "claude") {
@@ -77,7 +77,7 @@ async function askProvider(provider, rawArgs, context = {}) {
   if (provider !== "claude" && rawArgs && Object.prototype.hasOwnProperty.call(rawArgs, "effort")) {
     throw new Error("effort is supported only for claude_task.");
   }
-  const args = validateTaskArgs(rawArgs);
+  const args = validateTaskArgs(rawArgs, { provider });
   const prompt = buildPrompt(args);
   const command = providerCommand(provider, args);
   const job = startJob(provider, args, (runningJob) => runProvider(provider, args, prompt, command, runningJob));
@@ -107,9 +107,30 @@ async function runProvider(provider, args, prompt, command, job) {
   }), { scope: args.cwd });
   const output = sanitize(result.stdout);
   if (result.ok) return `${provider} result:\n${output || "(no output)"}`;
-  const err = result.timedOut ? `Timed out after ${args.timeoutMs}ms` : result.error || `Exited with code ${result.exitCode}`;
-  const stderr = stderrSummary(result.stderr);
-  return [`${provider} failed: ${err}`, stderr ? `stderr summary:\n${stderr}` : null, output ? `partial output:\n${output.slice(-4000)}` : null].filter(Boolean).join("\n");
+  return formatProviderFailure(provider, args, result);
+}
+
+function formatProviderFailure(provider, args, result) {
+  const reason = result.timedOut
+    ? `hard timeout after ${args.timeoutMs}ms`
+    : result.error || `exited with code ${result.exitCode}`;
+  const stdout = tailOutput(result.stdout);
+  const stderr = tailOutput(result.stderr);
+  return [
+    `${provider} failed: ${reason}`,
+    `timedOut: ${Boolean(result.timedOut)}`,
+    `pid: ${result.pid || "unknown"}`,
+    `elapsedMs: ${Number.isInteger(result.elapsedMs) ? result.elapsedMs : "unknown"}`,
+    Number.isInteger(result.exitCode) ? `exitCode: ${result.exitCode}` : null,
+    stdout ? `stdout partial:\n${stdout}` : "stdout partial: (empty)",
+    stderr ? `stderr partial:\n${stderr}` : "stderr partial: (empty)"
+  ].filter(Boolean).join("\n");
+}
+
+function tailOutput(text) {
+  const clean = sanitize(text);
+  if (!clean) return "";
+  return clean.slice(-4000);
 }
 
 function jobStatus(rawArgs) {

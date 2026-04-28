@@ -14,6 +14,7 @@ function startJob(provider, args, run) {
     status: "running",
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
+    warnings: Array.isArray(args.warnings) ? args.warnings : [],
     startedAt: new Date().toISOString(),
     lastCheckedAt: new Date().toISOString(),
     checkIntervalMs: jobCheckMs(),
@@ -72,16 +73,19 @@ function getJob(jobId) {
 }
 
 function formatJobPending(job, reason) {
+  const elapsedMs = jobElapsedMs(job);
   return [
+    ...formatWarnings(job),
     `${job.provider} job is running.`,
     `jobId: ${job.jobId}`,
     "status: running",
     reason ? `note: ${reason}` : null,
     `startedAt: ${job.startedAt}`,
-    `elapsedMs: ${Date.now() - Date.parse(job.startedAt)}`,
+    `elapsedMs: ${elapsedMs}`,
     `lastCheckedAt: ${job.lastCheckedAt}`,
     `checkIntervalMs: ${job.checkIntervalMs}`,
     job.timeoutMs > 0 ? `hardTimeoutMs: ${job.timeoutMs}` : "hardTimeoutMs: disabled",
+    job.timeoutMs > 0 ? `hardTimeoutRemainingMs: ${hardTimeoutRemainingMs(job)}` : null,
     job.pid ? `pid: ${job.pid}` : null,
     "Poll with ai_bridge_job using this jobId."
   ].filter(Boolean).join("\n");
@@ -91,8 +95,21 @@ function formatJobStatus(jobId) {
   const job = getJob(jobId);
   if (!job) return `job not found: ${sanitize(String(jobId || ""))}`;
   if (job.status === "running") return formatJobPending(job);
-  if (job.status === "failed") return job.result || `${job.provider} failed`;
-  return job.result || `${job.provider} result:\n(no output)`;
+  if (job.status === "failed") return [...formatWarnings(job), job.result || `${job.provider} failed`].filter(Boolean).join("\n");
+  return [...formatWarnings(job), job.result || `${job.provider} result:\n(no output)`].filter(Boolean).join("\n");
+}
+
+function formatWarnings(job) {
+  return (job && Array.isArray(job.warnings) ? job.warnings : []).map((warning) => `warning: ${warning}`);
+}
+
+function jobElapsedMs(job) {
+  return Date.now() - Date.parse(job.startedAt);
+}
+
+function hardTimeoutRemainingMs(job) {
+  if (!job || !Number.isInteger(job.timeoutMs) || job.timeoutMs <= 0) return null;
+  return Math.max(0, job.timeoutMs - jobElapsedMs(job));
 }
 
 function cleanupJobs() {
