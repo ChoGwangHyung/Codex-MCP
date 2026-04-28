@@ -49,6 +49,9 @@ CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "1"
 # 선택 provider 기본값:
 # CODEX_AI_BRIDGE_CLAUDE_MODEL = "<claude-model>"
 # CODEX_AI_BRIDGE_CLAUDE_EFFORT = "high"
+# MCP tool deadline이 엄격한 client에서 긴 리뷰를 돌릴 때:
+# CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS = "0"
+# CODEX_AI_BRIDGE_SYNC_BUDGET_MS = "120000"
 ```
 
 Windows에서는 forward slash 또는 escape된 backslash를 사용하세요.
@@ -113,6 +116,11 @@ Gemini 작업은 `effort`를 받지 않습니다.
 값이 없을 때 `model: "opus"`, `effort: "max"`, `timeoutMs: 900000`,
 `syncBudgetMs: 120000`을 적용합니다.
 
+긴 리뷰에서 provider hard kill deadline을 없애고 싶다면 `"timeoutMs": 0`을
+명시하거나 `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS=0`을 설정하고 `preset` 필드는
+생략하세요. `syncBudgetMs`는 `120000`처럼 양수로 둬야 MCP tool이 `jobId`를
+반환하고 `ai_bridge_job`으로 polling할 수 있습니다.
+
 ## 환경 변수
 
 | 변수 | 설명 |
@@ -144,15 +152,22 @@ process tree를 종료해 bridge lock 해제 뒤 Claude/Gemini 자식 process가
 합니다.
 
 오래 걸리는 provider 호출은 provider를 죽이는 timeout이 아니라 foreground sync
-budget으로 제어합니다. `syncBudgetMs`가 `0`이면 provider가 종료될 때까지 기다리고,
-client가 progress token을 제공하는 경우 job check interval마다 MCP progress
-notification을 보냅니다. 양수 `syncBudgetMs` 안에 작업이 끝나지 않으면 tool은
-`jobId`를 반환하고 provider는 background에서 계속 실행됩니다. 결과는
-`ai_bridge_job`으로 조회합니다. 실행 중인 job은 `lastCheckedAt`, `elapsedMs`,
-check interval과 hard timeout까지 남은 시간을 함께 보여줍니다. `timeoutMs > 0`이고
-`syncBudgetMs >= timeoutMs`이면 bridge가 `syncBudgetMs`를 자동으로 낮추고 warning을
-추가해, 반환된 `jobId`를 hard timeout 전에 조회할 시간이 남게 합니다.
-`"background": true`를 주면 즉시 `jobId`를 반환합니다.
+budget으로 제어합니다. `timeoutMs`는 일반 응답 대기 시간이 아니라 provider를
+강제로 종료하는 hard kill deadline입니다. `syncBudgetMs`가 `0`이면 provider가
+종료될 때까지 기다리고, client가 progress token을 제공하는 경우 job check
+interval마다 MCP progress notification을 보냅니다. 양수 `syncBudgetMs` 안에
+작업이 끝나지 않으면 tool은 `jobId`를 반환하고 provider는 background에서 계속
+실행됩니다. 결과는 `ai_bridge_job`으로 조회합니다. 실행 중인 job은
+`lastCheckedAt`, `elapsedMs`, check interval과 hard timeout까지 남은 시간을 함께
+보여줍니다. `timeoutMs > 0`이고 `syncBudgetMs >= timeoutMs`이면 bridge가
+`syncBudgetMs`를 자동으로 낮추고 warning을 추가해, 반환된 `jobId`를 hard timeout
+전에 조회할 시간이 남게 합니다.
+
+`timeoutMs: 240000`, `syncBudgetMs: 240000`처럼 같은 양수 값을 직접 전달하지
+마세요. foreground budget이 끝나는 순간 hard kill deadline도 같이 오기 때문입니다.
+긴 Claude Opus/max 리뷰는 `timeoutMs: 900000, syncBudgetMs: 120000` 또는
+`timeoutMs: 0, syncBudgetMs: 120000`을 권장합니다. `"background": true`를 주면
+즉시 `jobId`를 반환합니다.
 
 ## 예시
 

@@ -47,6 +47,9 @@ CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "1"
 # Optional provider defaults:
 # CODEX_AI_BRIDGE_CLAUDE_MODEL = "<claude-model>"
 # CODEX_AI_BRIDGE_CLAUDE_EFFORT = "high"
+# For long reviews in clients with strict MCP tool deadlines:
+# CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS = "0"
+# CODEX_AI_BRIDGE_SYNC_BUDGET_MS = "120000"
 ```
 
 Use forward slashes or escaped backslashes on Windows.
@@ -111,6 +114,11 @@ Set `"preset": "review"` for the default long review profile. For Claude this
 uses `model: "opus"`, `effort: "max"`, `timeoutMs: 900000`, and
 `syncBudgetMs: 120000` unless those fields are explicitly supplied.
 
+If you want long reviews without a hard provider kill deadline, explicitly pass
+`"timeoutMs": 0` or set `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS=0` and omit the
+`preset` field. Keep `syncBudgetMs` positive, for example `120000`, so the MCP
+tool can return a `jobId` and let you poll with `ai_bridge_job`.
+
 ## Environment Variables
 
 | Variable | Description |
@@ -142,15 +150,22 @@ up, and timed-out Windows provider calls terminate the process tree to avoid
 leaving Claude/Gemini children running after the bridge releases its lock.
 
 Long provider calls are controlled by a foreground sync budget, not by killing
-the provider. If `syncBudgetMs` is `0`, the tool waits until the provider exits
-and sends MCP progress notifications at the job check interval when the client
-provides a progress token. If a positive `syncBudgetMs` is reached first, the
-tool returns a `jobId` and the provider continues in the background. Poll it
+the provider. `timeoutMs` is a hard provider kill deadline; it is not the normal
+response wait time. If `syncBudgetMs` is `0`, the tool waits until the provider
+exits and sends MCP progress notifications at the job check interval when the
+client provides a progress token. If a positive `syncBudgetMs` is reached first,
+the tool returns a `jobId` and the provider continues in the background. Poll it
 with `ai_bridge_job`; running jobs include `lastCheckedAt`, `elapsedMs`, and the
 check interval plus the remaining hard timeout. When `timeoutMs > 0` and
 `syncBudgetMs >= timeoutMs`, the bridge automatically lowers `syncBudgetMs` and
 adds a warning so the returned `jobId` still has time to be polled before the
-hard timeout. Set `"background": true` to return a `jobId` immediately.
+hard timeout.
+
+Avoid passing the same positive value for `timeoutMs` and `syncBudgetMs`, such
+as `240000` and `240000`. That makes the foreground budget end at the same time
+as the hard kill deadline. For long Claude Opus/max reviews, prefer either
+`timeoutMs: 900000, syncBudgetMs: 120000` or `timeoutMs: 0, syncBudgetMs:
+120000`. Set `"background": true` to return a `jobId` immediately.
 
 ## Example
 
