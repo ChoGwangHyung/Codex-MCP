@@ -7,12 +7,14 @@ const {
   DEFAULT_SYNC_BUDGET_MS,
   DEFAULT_TIMEOUT_MS,
   EFFORTS,
+  MAX_PROVIDER_MAX_TURNS,
   MAX_SYNC_BUDGET_MS,
   MAX_TIMEOUT_MS,
   MIN_TASK_TIMEOUT_MS,
   MODEL_RE,
   POLICIES,
   PRESETS,
+  REVIEW_MAX_TURNS,
   REVIEW_SYNC_BUDGET_MS,
   REVIEW_TIMEOUT_MS,
   ROLES
@@ -111,6 +113,15 @@ function validateEffort(effort) {
   return effort;
 }
 
+function validateMaxTurns(maxTurns) {
+  if (maxTurns === undefined || maxTurns === null || maxTurns === "") return undefined;
+  const parsed = Number(maxTurns);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > MAX_PROVIDER_MAX_TURNS) {
+    throw new Error(`maxTurns must be an integer from 1 to ${MAX_PROVIDER_MAX_TURNS}`);
+  }
+  return parsed;
+}
+
 function validatePreset(preset) {
   if (preset === undefined || preset === null || preset === "") return undefined;
   if (typeof preset !== "string" || !PRESETS.has(preset)) {
@@ -128,6 +139,7 @@ function validateTaskArgs(args, options = {}) {
   }
   const timing = timingDefaults(args, options);
   const reviewPreset = timing.preset === "review";
+  const reviewMaxTurns = reviewPreset && options.provider === "claude" ? REVIEW_MAX_TURNS : undefined;
   return {
     ...args,
     preset: timing.preset,
@@ -137,6 +149,7 @@ function validateTaskArgs(args, options = {}) {
     cwd: resolveCwd(args.cwd),
     model: validateModel(args.model || (reviewPreset && options.provider === "claude" ? "opus" : undefined)),
     effort: validateEffort(args.effort || (reviewPreset && options.provider === "claude" ? "max" : undefined)),
+    maxTurns: validateMaxTurns(args.maxTurns !== undefined && args.maxTurns !== null && args.maxTurns !== "" ? args.maxTurns : reviewMaxTurns),
     timeoutMs: timing.timeoutMs,
     background: timing.background,
     syncBudgetMs: timing.syncBudgetMs,
@@ -162,6 +175,7 @@ module.exports = {
   resolveCwd,
   validateModel,
   validateEffort,
+  validateMaxTurns,
   validatePreset,
   validateTaskArgs,
   envJsonArray

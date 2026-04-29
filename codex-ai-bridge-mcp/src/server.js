@@ -6,6 +6,7 @@ const {
   DEFAULT_ROLE,
   DEFAULT_TIMEOUT_MS,
   EFFORTS,
+  MAX_PROVIDER_MAX_TURNS,
   MAX_HEALTH_TIMEOUT_MS,
   MAX_SYNC_BUDGET_MS,
   MAX_TIMEOUT_MS,
@@ -20,10 +21,10 @@ const { askProvider, healthCheck, jobStatus } = require("./providers.js");
 const { sanitize } = require("./util.js");
 
 const tools = [
-  tool("claude_task", "Ask Claude Code for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeEffort: true })),
-  tool("gemini_task", "Ask Gemini CLI for advisory, planning, review, QA, or optionally agentic work.", taskSchema()),
+  tool("claude_task", "Ask Claude Code for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeEffort: true, includeMaxTurns: true })),
+  tool("gemini_task", "Ask Gemini CLI for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeMaxTurns: true })),
   tool("cross_review", "Ask Claude and Gemini in parallel and return both responses.", {
-    ...taskSchema().properties,
+    ...taskSchema({ includeMaxTurns: true }).properties,
     providers: {
       type: "array",
       items: { type: "string", enum: ["claude", "gemini"] },
@@ -83,6 +84,14 @@ function taskSchema(options = {}) {
       type: "string",
       enum: [...EFFORTS],
       description: "Claude-only effort level."
+    };
+  }
+  if (options.includeMaxTurns) {
+    properties.maxTurns = {
+      type: "integer",
+      minimum: 1,
+      maximum: MAX_PROVIDER_MAX_TURNS,
+      description: "Provider turn limit for this call where supported. Claude uses --max-turns; current Gemini CLI does not expose an equivalent flag."
     };
   }
   return {

@@ -43,7 +43,7 @@ args = ["<Codex-MCP>/codex-ai-bridge-mcp/src/index.js"]
 
 [mcp_servers.codex-ai-bridge.env]
 CODEX_AI_BRIDGE_ROOT = "<ProjectRoot>"
-CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "1"
+CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "4"
 # Optional provider defaults:
 # CODEX_AI_BRIDGE_CLAUDE_MODEL = "<claude-model>"
 # CODEX_AI_BRIDGE_CLAUDE_EFFORT = "high"
@@ -88,14 +88,15 @@ planner, reviewer, security, qa, architecture, refactor, implementer
 
 The role becomes part of the provider prompt so reviews stay focused.
 
-## Claude Model And Effort
+## Claude Model, Effort, And Turns
 
 `claude_task` supports:
 
 ```json
 {
   "model": "<claude-model>",
-  "effort": "high"
+  "effort": "high",
+  "maxTurns": 4
 }
 ```
 
@@ -109,6 +110,17 @@ Precedence:
 
 - Claude model: task `model` > `CODEX_AI_BRIDGE_CLAUDE_MODEL` > unset.
 - Claude effort: task `effort` > `CODEX_AI_BRIDGE_CLAUDE_EFFORT` > unset.
+- Provider max turns: task `maxTurns` > review preset default (`4`) >
+  `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` > policy default (`8` for agentic, `3`
+  otherwise).
+
+`maxTurns` controls the provider's internal continuation limit for one bridge
+call where the provider supports it. Claude uses `--max-turns`. The current
+Gemini CLI does not expose an equivalent flag, so `gemini_task` accepts the
+field for cross-provider request compatibility but does not emit a Gemini argv
+flag for it. A one-shot review gate usually means one bridge tool call, not
+necessarily `--max-turns 1`; wide Opus/max reviews often need about `4`. Use
+`1` only for strict single-turn probes.
 
 Gemini tasks do not accept `effort`.
 
@@ -116,7 +128,9 @@ Gemini tasks do not accept `effort`.
 
 Set `"preset": "review"` for the default long review profile. For Claude this
 uses `model: "opus"`, `effort: "max"`, `timeoutMs: 900000`, and
-`syncBudgetMs: 120000` unless those fields are explicitly supplied.
+`syncBudgetMs: 120000`, and `maxTurns: 4` unless those fields are explicitly
+supplied. In `cross_review`, `maxTurns` is applied to the Claude leg and is
+accepted by the Gemini leg for schema compatibility.
 
 If you want long reviews without a hard provider kill deadline, explicitly pass
 `"timeoutMs": 0` or set `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS=0` and omit the
@@ -131,7 +145,7 @@ tool can return a `jobId` and let you poll with `ai_bridge_job`.
 | `CODEX_AI_BRIDGE_CLAUDE_COMMAND` | Override Claude CLI command. |
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | Default Claude model. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | Default Claude effort. |
-| `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns. Use `1` for one-shot gates. |
+| `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Default Claude CLI internal turn limit. This is not the number of bridge calls. Use `4` for broad one-call review gates; use `1` only for strict single-turn probes. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Hard provider timeout. Defaults to `900000` ms. Set to `0` to disable the hard timeout. |
 | `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `120000` ms. Set to `0` to wait until the provider exits. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | Interval for updating running job liveness status. Defaults to `300000` ms. |
@@ -171,11 +185,17 @@ as the hard kill deadline. For long Claude Opus/max reviews, prefer either
 `timeoutMs: 900000, syncBudgetMs: 120000` or `timeoutMs: 0, syncBudgetMs:
 120000`. Set `"background": true` to return a `jobId` immediately.
 
+When a provider command fails, the failure output includes the working
+directory and actual `argv` used to launch the provider. This makes settings
+such as Claude `--max-turns` visible in the error report. It also shows when a
+provider, such as the current Gemini CLI, has no corresponding argv flag.
+
 ## Example
 
 ```json
 {
   "preset": "review",
+  "maxTurns": 4,
   "role": "reviewer",
   "policy": "advisory",
   "prompt": "Review the pending diff for correctness risks. Findings first."

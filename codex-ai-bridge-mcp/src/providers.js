@@ -10,6 +10,7 @@ const {
   normalizeTimeout,
   repoRoot,
   validateEffort,
+  validateMaxTurns,
   validateModel,
   validateTaskArgs
 } = require("./config.js");
@@ -32,6 +33,7 @@ function providerCommand(provider, args) {
     const mode = args.policy === "agentic"
       ? (process.env.CODEX_AI_BRIDGE_CLAUDE_PERMISSION_MODE || "default")
       : "plan";
+    const maxTurns = resolveClaudeMaxTurns(args);
     const commandArgs = [
       "-p",
       PROMPT_ARG,
@@ -40,7 +42,7 @@ function providerCommand(provider, args) {
       "--permission-mode",
       mode,
       "--max-turns",
-      process.env.CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS || (args.policy === "agentic" ? "8" : "3")
+      String(maxTurns)
     ];
     if (args.policy !== "agentic") {
       commandArgs.push(
@@ -107,10 +109,10 @@ async function runProvider(provider, args, prompt, command, job) {
   }), { scope: args.cwd });
   const output = sanitize(result.stdout);
   if (result.ok) return `${provider} result:\n${output || "(no output)"}`;
-  return formatProviderFailure(provider, args, result);
+  return formatProviderFailure(provider, args, result, command);
 }
 
-function formatProviderFailure(provider, args, result) {
+function formatProviderFailure(provider, args, result, command) {
   const reason = result.timedOut
     ? `hard timeout after ${args.timeoutMs}ms`
     : result.error || `exited with code ${result.exitCode}`;
@@ -118,6 +120,8 @@ function formatProviderFailure(provider, args, result) {
   const stderr = tailOutput(result.stderr);
   return [
     `${provider} failed: ${reason}`,
+    `cwd: ${sanitize(args.cwd)}`,
+    command ? `argv: ${formatArgv(command)}` : null,
     `timedOut: ${Boolean(result.timedOut)}`,
     `pid: ${result.pid || "unknown"}`,
     `elapsedMs: ${Number.isInteger(result.elapsedMs) ? result.elapsedMs : "unknown"}`,
@@ -125,6 +129,25 @@ function formatProviderFailure(provider, args, result) {
     stdout ? `stdout partial:\n${stdout}` : "stdout partial: (empty)",
     stderr ? `stderr partial:\n${stderr}` : "stderr partial: (empty)"
   ].filter(Boolean).join("\n");
+}
+
+function resolveClaudeMaxTurns(args) {
+  const configured = args.maxTurns !== undefined && args.maxTurns !== null && args.maxTurns !== ""
+    ? args.maxTurns
+    : process.env.CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS;
+  return validateMaxTurns(configured !== undefined && configured !== null && configured !== ""
+    ? configured
+    : (args.policy === "agentic" ? 8 : 3));
+}
+
+function formatArgv(command) {
+  return [command.command, ...command.args].map(formatArg).join(" ");
+}
+
+function formatArg(value) {
+  const clean = sanitize(String(value));
+  if (/^[A-Za-z0-9_./:=@%+-]+$/.test(clean)) return clean;
+  return JSON.stringify(clean);
 }
 
 function tailOutput(text) {

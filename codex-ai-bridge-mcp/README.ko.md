@@ -45,7 +45,7 @@ args = ["<Codex-MCP>/codex-ai-bridge-mcp/src/index.js"]
 
 [mcp_servers.codex-ai-bridge.env]
 CODEX_AI_BRIDGE_ROOT = "<ProjectRoot>"
-CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "1"
+CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "4"
 # 선택 provider 기본값:
 # CODEX_AI_BRIDGE_CLAUDE_MODEL = "<claude-model>"
 # CODEX_AI_BRIDGE_CLAUDE_EFFORT = "high"
@@ -90,14 +90,15 @@ planner, reviewer, security, qa, architecture, refactor, implementer
 
 역할은 provider 프롬프트에 포함되어 리뷰 초점을 좁히는 데 사용됩니다.
 
-## Claude 모델과 effort
+## Claude 모델, effort, turns
 
 `claude_task`는 다음 인자를 지원합니다.
 
 ```json
 {
   "model": "<claude-model>",
-  "effort": "high"
+  "effort": "high",
+  "maxTurns": 4
 }
 ```
 
@@ -111,6 +112,16 @@ low, medium, high, xhigh, max
 
 - Claude model: task `model` > `CODEX_AI_BRIDGE_CLAUDE_MODEL` > unset.
 - Claude effort: task `effort` > `CODEX_AI_BRIDGE_CLAUDE_EFFORT` > unset.
+- Provider max turns: task `maxTurns` > review preset 기본값(`4`) >
+  `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` > policy 기본값(agentic은 `8`, 그 외는 `3`).
+
+`maxTurns`는 bridge 호출 횟수가 아니라 provider 내부 continuation 한도입니다.
+Claude는 `--max-turns`로 적용합니다. 현재 Gemini CLI에는 같은 의미의 flag가
+없으므로 `gemini_task`는 cross-provider 요청 호환성을 위해 이 필드를 받지만
+Gemini argv에는 별도 flag를 추가하지 않습니다. one-shot review gate는 보통 bridge
+tool 호출을 1회로 제한한다는 뜻이지, 반드시 `--max-turns 1`이라는 뜻은 아닙니다.
+넓은 Opus/max 리뷰는 `4` 정도가 실용적이고, `1`은 엄격한 단일 turn probe에만 쓰는
+것을 권장합니다.
 
 Gemini 작업은 `effort`를 받지 않습니다.
 
@@ -118,7 +129,9 @@ Gemini 작업은 `effort`를 받지 않습니다.
 
 `"preset": "review"`를 지정하면 긴 리뷰용 기본값을 사용합니다. Claude에서는 명시
 값이 없을 때 `model: "opus"`, `effort: "max"`, `timeoutMs: 900000`,
-`syncBudgetMs: 120000`을 적용합니다.
+`syncBudgetMs: 120000`, `maxTurns: 4`를 적용합니다. `cross_review`에서는
+`maxTurns`가 Claude leg에 적용되고 Gemini leg에서도 schema 호환성을 위해
+허용됩니다.
 
 긴 리뷰에서 provider hard kill deadline을 없애고 싶다면 `"timeoutMs": 0`을
 명시하거나 `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS=0`을 설정하고 `preset` 필드는
@@ -133,7 +146,7 @@ Gemini 작업은 `effort`를 받지 않습니다.
 | `CODEX_AI_BRIDGE_CLAUDE_COMMAND` | Claude CLI command override입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | 기본 Claude 모델입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | 기본 Claude effort입니다. |
-| `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Claude max turns입니다. one-shot gate는 `1`을 권장합니다. |
+| `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | 기본 Claude CLI 내부 turn 한도입니다. bridge 호출 횟수가 아닙니다. 넓은 one-call 리뷰 gate는 `4`, 엄격한 단일 turn probe는 `1`을 권장합니다. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | provider hard timeout입니다. 기본값은 `900000` ms입니다. `0`이면 hard timeout을 비활성화합니다. |
 | `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `120000` ms입니다. `0`이면 provider가 종료될 때까지 기다립니다. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | 실행 중인 job liveness 상태를 갱신하는 주기입니다. 기본값은 `300000` ms입니다. |
@@ -173,11 +186,17 @@ interval마다 MCP progress notification을 보냅니다. 양수 `syncBudgetMs` 
 `timeoutMs: 0, syncBudgetMs: 120000`을 권장합니다. `"background": true`를 주면
 즉시 `jobId`를 반환합니다.
 
+provider command가 실패하면 실패 출력에 provider를 실행한 작업 디렉터리와 실제
+`argv`가 포함됩니다. 따라서 `--max-turns` 같은 설정이 어떤 값으로 실행됐는지
+오류 보고서에서 바로 확인할 수 있습니다. 또한 현재 Gemini CLI처럼 대응되는 argv
+flag가 없는 provider도 실패 로그의 실제 argv로 확인할 수 있습니다.
+
 ## 예시
 
 ```json
 {
   "preset": "review",
+  "maxTurns": 4,
   "role": "reviewer",
   "policy": "advisory",
   "prompt": "Review the pending diff for correctness risks. Findings first."
