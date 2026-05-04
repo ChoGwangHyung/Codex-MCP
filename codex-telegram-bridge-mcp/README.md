@@ -12,6 +12,9 @@ general-purpose Telegram bot framework.
 | Tool | Purpose |
 | --- | --- |
 | `telegram_send` | Send a message to an allowlisted Telegram chat. |
+| `telegram_send_file` | Send any file type from a local path, URL, or Telegram file ID. |
+| `telegram_send_photo` | Send a photo from a local path, URL, or Telegram file ID. |
+| `telegram_send_document` | Send a file/document from a local path, URL, or Telegram file ID. |
 | `telegram_wait_reply` | Wait for one reply from an allowlisted chat. |
 | `telegram_ask` | Send a message and wait for one reply. |
 | `telegram_inbox_read` | Read or consume messages captured by the receive monitor. |
@@ -25,6 +28,9 @@ The package also includes a Codex hook command:
 | Command | Purpose |
 | --- | --- |
 | `codex-telegram-permission-hook` | Handle native Codex `PermissionRequest` approvals through Telegram. |
+
+For `telegram_send`, `telegram_wait_reply`, `telegram_ask`, and media tools,
+`chatId` may be omitted when exactly one Telegram chat is allowlisted.
 
 ## Requirements
 
@@ -161,6 +167,61 @@ Check monitor state:
 ```text
 telegram_monitor_status
 ```
+
+## Media Sending
+
+Use `telegram_send_file` for format-agnostic file delivery. It sends through
+Telegram's document path, so extensions such as `.apk`, `.md`, `.txt`, `.png`,
+`.jpeg`, `.zip`, and logs are handled the same way and preserve the original
+file. `telegram_send_document` is kept as an equivalent explicit document tool.
+
+Use `telegram_send_photo` only when you specifically want Telegram to render the
+image as a photo in chat. It shares the same local upload preparation logic, but
+uses Telegram's photo endpoint.
+
+Each media tool accepts exactly one source:
+
+- `path`: upload a local file from the machine running the MCP server.
+- `url`: send a public HTTP(S) URL for Telegram to fetch.
+- `fileId`: resend an existing Telegram `file_id`.
+
+When there is exactly one allowlisted chat, `chatId` may be omitted.
+
+Send any local file:
+
+```json
+{
+  "path": "D:\\Projects\\app-release.apk",
+  "caption": "Latest build"
+}
+```
+
+Send a photo from a URL:
+
+```json
+{
+  "url": "https://example.com/screenshot.png",
+  "caption": "Latest screenshot"
+}
+```
+
+Result:
+
+```json
+{
+  "status": "sent",
+  "type": "file",
+  "source": "path",
+  "chatId": "12345",
+  "messageId": 77,
+  "fileName": "app-release.apk",
+  "fileSize": 123456,
+  "timestamp": "2026-05-05T00:00:00.000Z"
+}
+```
+
+Local uploads reject directories, missing files, and files over the bridge's
+conservative local upload cap before contacting Telegram.
 
 ## Choice Questions
 
@@ -414,6 +475,9 @@ telegram_bridge_health
 telegram_monitor_status
 telegram_relay_status
 telegram_send
+telegram_send_file
+telegram_send_photo
+telegram_send_document
 telegram_wait_reply
 telegram_ask
 ```

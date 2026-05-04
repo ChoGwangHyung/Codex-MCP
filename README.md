@@ -11,7 +11,7 @@ Korean documentation: [README.ko.md](README.ko.md)
 | MCP | Description |
 | --- | --- |
 | `codex-ai-bridge-mcp` | Calls Claude Code and Gemini CLI for bounded planning, review, QA, architecture, security, or implementation advice. |
-| `codex-telegram-bridge-mcp` | Sends and receives Telegram messages through allowlisted chats, supports workflow approvals, auto-installs a user-level hook for native Codex permission approvals, and can relay Telegram messages into an active Codex session. |
+| `codex-telegram-bridge-mcp` | Sends and receives Telegram messages and files through allowlisted chats, supports workflow approvals, auto-installs a user-level hook for native Codex permission approvals, and can relay Telegram messages into an active Codex session. |
 
 ## Layout
 

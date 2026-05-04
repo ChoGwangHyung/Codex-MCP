@@ -1,5 +1,7 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const {
   DEFAULT_TELEGRAM_TIMEOUT_MS,
   DEFAULT_APPROVAL_TIMEOUT_MS
@@ -43,6 +45,7 @@ let relayHooks = {
   start: () => {},
   schedule: () => {}
 };
+const MAX_LOCAL_UPLOAD_BYTES = 50 * 1024 * 1024;
 
 function setRelayHooks(hooks) {
   relayHooks = {
@@ -51,48 +54,224 @@ function setRelayHooks(hooks) {
   };
 }
 
-async function telegramApi(method, payload) {
+async function telegramApiRequest(method, body, multipart = false) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload || {})
-  });
-  const body = await response.json().catch(() => ({}));
-  if (!response.ok || body.ok !== true) {
-    throw new Error(`Telegram API failed: ${sanitize(body.description || response.statusText)}`);
+  const request = multipart
+    ? { method: "POST", body }
+    : {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body || {})
+      };
+  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, request);
+  const resultBody = await response.json().catch(() => ({}));
+  if (!response.ok || resultBody.ok !== true) {
+    throw new Error(`Telegram API failed: ${sanitize(resultBody.description || response.statusText)}`);
   }
-  return body.result;
+  return resultBody.result;
+}
+
+async function telegramApi(method, payload) {
+  return telegramApiRequest(method, payload, false);
+}
+
+async function telegramApiMultipart(method, formData) {
+  return telegramApiRequest(method, formData, true);
 }
 
 async function telegramSend(args) {
-  assertTelegram(args.chatId);
+  const chatId = resolveChatId(args.chatId);
+  assertTelegram(chatId);
   const text = sanitize(args.text);
   if (!text) throw new Error("text is required");
   await telegramApi("sendMessage", {
-    chat_id: args.chatId,
+    chat_id: chatId,
     text,
     disable_web_page_preview: Boolean(args.disableWebPagePreview)
   });
-  return `telegram sent to ${args.chatId}`;
+  return `telegram sent to ${chatId}`;
+}
+
+async function telegramSendPhoto(args) {
+  return JSON.stringify(await telegramSendMedia({
+    args,
+    type: "photo",
+    method: "sendPhoto",
+    field: "photo"
+  }), null, 2);
+}
+
+async function telegramSendFile(args) {
+  return JSON.stringify(await telegramSendMedia({
+    args,
+    type: "file",
+    method: "sendDocument",
+    field: "document"
+  }), null, 2);
+}
+
+async function telegramSendDocument(args) {
+  return JSON.stringify(await telegramSendMedia({
+    args,
+    type: "document",
+    method: "sendDocument",
+    field: "document"
+  }), null, 2);
+}
+
+async function telegramSendMedia({ args, type, method, field }) {
+  const chatId = resolveChatId(args.chatId);
+  assertTelegram(chatId);
+  const source = resolveMediaSource(args);
+  const caption = mediaCaption(args.caption);
+
+  const common = {
+    chat_id: chatId
+  };
+  if (caption) common.caption = caption;
+  if (args.disableNotification === true) common.disable_notification = true;
+  if (args.protectContent === true) common.protect_content = true;
+
+  let result;
+  let fileName = "";
+  let fileSize = null;
+  if (source.kind === "path") {
+    const local = await prepareLocalUpload(source.value, args.filename);
+    const form = new FormData();
+    for (const [key, value] of Object.entries(common)) {
+      form.append(key, String(value));
+    }
+    form.append(field, local.blob, local.fileName);
+    result = await telegramApiMultipart(method, form);
+    fileName = local.fileName;
+    fileSize = local.fileSize;
+  } else {
+    result = await telegramApi(method, {
+      ...common,
+      [field]: source.value
+    });
+    fileName = source.kind === "url" ? path.posix.basename(new URL(source.value).pathname) : "";
+  }
+
+  const response = {
+    status: "sent",
+    type,
+    source: source.kind,
+    chatId,
+    messageId: result && result.message_id !== undefined ? Number(result.message_id) : 0,
+    timestamp: new Date().toISOString()
+  };
+  if (fileName) response.fileName = fileName;
+  if (source.kind === "path") response.fileSize = fileSize;
+  return response;
 }
 
 async function telegramWaitReply(args) {
-  assertTelegram(args.chatId);
+  const chatId = resolveChatId(args.chatId);
+  assertTelegram(chatId);
   startTelegramMonitor();
   const timeoutMs = normalizeTimeout(args.timeoutMs, DEFAULT_TELEGRAM_TIMEOUT_MS);
 
   if (args.ignoreExisting !== false) {
     await telegramSyncOffset();
-    clearInboxForChat(args.chatId);
+    clearInboxForChat(chatId);
   }
 
-  const existing = takeFirstInboxMessage(args.chatId, true);
+  const existing = takeFirstInboxMessage(chatId, true);
   if (existing) {
     return formatReply(existing);
   }
 
-  return formatReply(await waitForInboxMessage(args.chatId, timeoutMs));
+  return formatReply(await waitForInboxMessage(chatId, timeoutMs));
+}
+
+function resolveMediaSource(args) {
+  const sources = [
+    args.path !== undefined && args.path !== null && String(args.path).trim()
+      ? { kind: "path", value: String(args.path).trim() }
+      : null,
+    args.url !== undefined && args.url !== null && String(args.url).trim()
+      ? { kind: "url", value: normalizeMediaUrl(args.url) }
+      : null,
+    args.fileId !== undefined && args.fileId !== null && String(args.fileId).trim()
+      ? { kind: "file_id", value: String(args.fileId).trim() }
+      : null
+  ].filter(Boolean);
+  if (sources.length === 0) throw new Error("one of path, url, or fileId is required");
+  if (sources.length > 1) throw new Error("only one of path, url, or fileId may be provided");
+  return sources[0];
+}
+
+function normalizeMediaUrl(value) {
+  const text = String(value || "").trim();
+  let parsed;
+  try {
+    parsed = new URL(text);
+  } catch {
+    throw new Error("url must be a valid http or https URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("url must be a valid http or https URL");
+  }
+  return parsed.toString();
+}
+
+function mediaCaption(value) {
+  if (value === undefined || value === null) return "";
+  const caption = sanitize(value);
+  if (caption.length > 1024) {
+    throw new Error("caption is too long; Telegram captions support up to 1024 characters");
+  }
+  return caption;
+}
+
+async function prepareLocalUpload(filePath, filename) {
+  const resolved = path.resolve(String(filePath || ""));
+  let stat;
+  try {
+    stat = await fs.promises.stat(resolved);
+  } catch {
+    throw new Error(`file does not exist: ${sanitize(resolved)}`);
+  }
+  if (!stat.isFile()) {
+    throw new Error(`path is not a file: ${sanitize(resolved)}`);
+  }
+  if (stat.size > MAX_LOCAL_UPLOAD_BYTES) {
+    throw new Error(`file is too large for local upload: ${stat.size} bytes, max ${MAX_LOCAL_UPLOAD_BYTES} bytes`);
+  }
+  const content = await fs.promises.readFile(resolved);
+  return {
+    blob: new Blob([content], { type: mimeTypeForPath(resolved) }),
+    fileName: safeFileName(filename || path.basename(resolved)),
+    fileSize: stat.size
+  };
+}
+
+function mimeTypeForPath(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const types = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".txt": "text/plain",
+    ".md": "text/markdown",
+    ".json": "application/json",
+    ".pdf": "application/pdf",
+    ".zip": "application/zip",
+    ".apk": "application/vnd.android.package-archive"
+  };
+  return types[ext] || "application/octet-stream";
+}
+
+function safeFileName(value) {
+  const name = String(value || "")
+    .replace(/[\\/:*?"<>|\r\n]+/g, "_")
+    .trim()
+    .slice(0, 240);
+  return name || "upload";
 }
 
 async function telegramSyncOffset() {
@@ -600,6 +779,9 @@ function displayName(message) {
 module.exports = {
   setRelayHooks,
   telegramSend,
+  telegramSendPhoto,
+  telegramSendFile,
+  telegramSendDocument,
   telegramWaitReply,
   telegramAsk,
   telegramInboxRead,

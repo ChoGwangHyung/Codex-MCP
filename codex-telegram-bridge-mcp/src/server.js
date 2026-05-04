@@ -33,6 +33,9 @@ const {
   telegramInboxRead,
   telegramMonitorStatus,
   telegramSend,
+  telegramSendDocument,
+  telegramSendFile,
+  telegramSendPhoto,
   telegramWaitReply
 } = require("./telegram.js");
 const { maskToken, sanitize } = require("./util.js");
@@ -47,18 +50,41 @@ const tools = [
     chatId: { type: "string", minLength: 1 },
     text: { type: "string", minLength: 1 },
     disableWebPagePreview: { type: "boolean", default: false }
-  }, ["chatId", "text"]),
+  }, ["text"]),
+  tool("telegram_send_file", "Send any file type to an allowlisted Telegram chat from a local path, URL, or Telegram file_id.", mediaToolSchema({
+    filename: {
+      type: "string",
+      minLength: 1,
+      description: "Optional display filename for local path uploads."
+    }
+  }), []),
+  tool("telegram_send_photo", "Send a photo to an allowlisted Telegram chat from a local path, URL, or Telegram file_id.", mediaToolSchema(), []),
+  tool("telegram_send_document", "Send a file/document to an allowlisted Telegram chat from a local path, URL, or Telegram file_id.", mediaToolSchema({
+    filename: {
+      type: "string",
+      minLength: 1,
+      description: "Optional display filename for local path uploads."
+    }
+  }), []),
   tool("telegram_wait_reply", "Wait for the next Telegram message from an allowlisted chat.", {
-    chatId: { type: "string", minLength: 1 },
+    chatId: {
+      type: "string",
+      minLength: 1,
+      description: "Optional when exactly one Telegram chat is allowlisted."
+    },
     timeoutMs: { type: "integer", minimum: 5000, maximum: 900000, default: DEFAULT_TELEGRAM_TIMEOUT_MS },
     ignoreExisting: {
       type: "boolean",
       default: true,
       description: "When true, consume existing updates before waiting for the next message."
     }
-  }, ["chatId"]),
+  }, []),
   tool("telegram_ask", "Send a Telegram question and wait for one reply or an inline button choice from the same allowlisted chat.", {
-    chatId: { type: "string", minLength: 1 },
+    chatId: {
+      type: "string",
+      minLength: 1,
+      description: "Optional when exactly one Telegram chat is allowlisted."
+    },
     text: { type: "string", minLength: 1 },
     message: { type: "string", minLength: 1 },
     question: { type: "string", minLength: 1 },
@@ -125,6 +151,35 @@ function choiceArraySchema() {
   };
 }
 
+function mediaToolSchema(extra = {}) {
+  return {
+    chatId: {
+      type: "string",
+      minLength: 1,
+      description: "Optional when exactly one Telegram chat is allowlisted."
+    },
+    path: {
+      type: "string",
+      minLength: 1,
+      description: "Local file path to upload."
+    },
+    url: {
+      type: "string",
+      minLength: 1,
+      description: "Public HTTP(S) URL for Telegram to fetch."
+    },
+    fileId: {
+      type: "string",
+      minLength: 1,
+      description: "Existing Telegram file_id to resend."
+    },
+    caption: { type: "string", minLength: 1 },
+    disableNotification: { type: "boolean", default: false },
+    protectContent: { type: "boolean", default: false },
+    ...extra
+  };
+}
+
 function respond(id, result) {
   process.stdout.write(`${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`);
 }
@@ -155,6 +210,9 @@ async function healthCheck() {
 
 async function callTool(name, args) {
   if (name === "telegram_send") return textResult(await telegramSend(args || {}));
+  if (name === "telegram_send_file") return textResult(await telegramSendFile(args || {}));
+  if (name === "telegram_send_photo") return textResult(await telegramSendPhoto(args || {}));
+  if (name === "telegram_send_document") return textResult(await telegramSendDocument(args || {}));
   if (name === "telegram_wait_reply") return textResult(await telegramWaitReply(args || {}));
   if (name === "telegram_ask") return textResult(await telegramAsk(args || {}));
   if (name === "telegram_inbox_read") return textResult(await telegramInboxRead(args || {}));

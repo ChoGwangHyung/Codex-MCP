@@ -13,6 +13,9 @@ Codex Telegram Bridge MCP는 allowlist에 등록된 Telegram 채팅과 Codex 세
 | Tool | 목적 |
 | --- | --- |
 | `telegram_send` | allowlist에 등록된 Telegram 채팅으로 메시지를 보냅니다. |
+| `telegram_send_file` | local path, URL, Telegram file ID에서 모든 형식의 파일을 보냅니다. |
+| `telegram_send_photo` | local path, URL, Telegram file ID에서 사진을 보냅니다. |
+| `telegram_send_document` | local path, URL, Telegram file ID에서 파일/document를 보냅니다. |
 | `telegram_wait_reply` | allowlist 채팅의 다음 응답 1개를 기다립니다. |
 | `telegram_ask` | 메시지를 보내고 응답 1개를 기다립니다. |
 | `telegram_inbox_read` | 수신 monitor가 캡처한 메시지를 읽거나 consume합니다. |
@@ -26,6 +29,9 @@ Codex Telegram Bridge MCP는 allowlist에 등록된 Telegram 채팅과 Codex 세
 | Command | 목적 |
 | --- | --- |
 | `codex-telegram-permission-hook` | Codex native `PermissionRequest` 승인을 Telegram으로 처리합니다. |
+
+`telegram_send`, `telegram_wait_reply`, `telegram_ask`, media 도구는 allowlist
+chat이 정확히 1개면 `chatId`를 생략할 수 있습니다.
 
 ## 요구 사항
 
@@ -162,6 +168,61 @@ monitor 상태 확인:
 ```text
 telegram_monitor_status
 ```
+
+## 미디어/파일 전송
+
+형식과 상관없이 파일을 보내려면 `telegram_send_file`을 사용합니다. 이 도구는
+Telegram document 경로로 전송하므로 `.apk`, `.md`, `.txt`, `.png`, `.jpeg`,
+`.zip`, log 파일 등을 같은 방식으로 처리하고 원본 파일을 보존합니다.
+`telegram_send_document`는 같은 목적의 명시적 document 도구로 유지됩니다.
+
+`telegram_send_photo`는 Telegram 채팅에서 이미지를 사진처럼 표시하고 싶을 때만
+사용합니다. local upload 준비 로직은 파일 전송과 공유하지만 Telegram photo
+endpoint를 사용합니다.
+
+각 미디어 도구는 다음 source 중 정확히 하나만 받습니다.
+
+- `path`: MCP 서버가 실행되는 machine의 local file을 업로드합니다.
+- `url`: Telegram이 가져올 수 있는 public HTTP(S) URL을 전송합니다.
+- `fileId`: 기존 Telegram `file_id`를 다시 전송합니다.
+
+allowlist chat이 정확히 1개면 `chatId`를 생략할 수 있습니다.
+
+local 파일 보내기:
+
+```json
+{
+  "path": "D:\\Projects\\app-release.apk",
+  "caption": "Latest build"
+}
+```
+
+URL 사진 보내기:
+
+```json
+{
+  "url": "https://example.com/screenshot.png",
+  "caption": "Latest screenshot"
+}
+```
+
+결과:
+
+```json
+{
+  "status": "sent",
+  "type": "file",
+  "source": "path",
+  "chatId": "12345",
+  "messageId": 77,
+  "fileName": "app-release.apk",
+  "fileSize": 123456,
+  "timestamp": "2026-05-05T00:00:00.000Z"
+}
+```
+
+local upload는 Telegram 호출 전에 directory, 없는 파일, bridge의 보수적인 local
+upload 한도를 넘는 파일을 명확한 오류로 거부합니다.
 
 ## Choice 질문
 
@@ -412,6 +473,9 @@ telegram_bridge_health
 telegram_monitor_status
 telegram_relay_status
 telegram_send
+telegram_send_file
+telegram_send_photo
+telegram_send_document
 telegram_wait_reply
 telegram_ask
 ```
