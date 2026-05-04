@@ -739,11 +739,18 @@ async function updateChoiceMessage(callback, question, label) {
   const chatId = message && message.chat && message.chat.id;
   const messageId = message && message.message_id;
   if (!chatId || !messageId) return;
-  await telegramApi("editMessageText", {
+  const updated = await telegramApi("editMessageText", {
     chat_id: chatId,
     message_id: messageId,
     text: choiceSelectionText(question, label),
-    disable_web_page_preview: true
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: [] }
+  }).then(() => true).catch(() => false);
+  if (updated) return;
+  await telegramApi("editMessageReplyMarkup", {
+    chat_id: chatId,
+    message_id: messageId,
+    reply_markup: { inline_keyboard: [] }
   }).catch(() => {});
   await telegramApi("editMessageReplyMarkup", {
     chat_id: chatId,

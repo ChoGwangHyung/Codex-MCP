@@ -116,6 +116,9 @@ async function telegramApiFn(method, payload) {
   assert.ok(apiCalls.some((call) => call.method === "answerCallbackQuery"));
   assert.ok(apiCalls.some((call) => call.method === "editMessageReplyMarkup"));
   assert.ok(apiCalls.some((call) => call.method === "editMessageReplyMarkup" && !Object.prototype.hasOwnProperty.call(call.payload, "reply_markup")));
+  assert.ok(apiCalls.some((call) => call.method === "editMessageReplyMarkup" && call.payload.reply_markup && call.payload.reply_markup.inline_keyboard.length === 0));
+  assert.ok(apiCalls.some((call) => call.method === "editMessageText" && call.payload.reply_markup && call.payload.reply_markup.inline_keyboard.length === 0));
+  assert.ok(apiCalls.some((call) => call.method === "editMessageReplyMarkup" && call.payload.message_id === 20));
 
   approvalCallbackData = "";
   replied = false;
@@ -171,7 +174,7 @@ async function telegramApiFn(method, payload) {
     tool_response: { ok: true }
   }, { telegramApiFn });
   assert.ok(apiCalls.some((call) => call.method === "editMessageText" && /CLI에서 승인되어 실행/.test(call.payload.text)));
-  assert.ok(apiCalls.some((call) => call.method === "editMessageReplyMarkup" && !Object.prototype.hasOwnProperty.call(call.payload, "reply_markup")));
+  assert.ok(apiCalls.some((call) => call.method === "editMessageText" && call.payload.reply_markup && call.payload.reply_markup.inline_keyboard.length === 0));
 })().catch((error) => {
   console.error(error);
   process.exit(1);

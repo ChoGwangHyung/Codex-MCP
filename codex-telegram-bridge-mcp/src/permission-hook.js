@@ -220,16 +220,17 @@ async function sendApprovalRequest(telegramApiFn, chatIds, request) {
       disable_web_page_preview: true,
       reply_markup: approvalReplyMarkup(request.code)
     });
-    return { chatId: String(chatId), messageId: sent && sent.message_id };
+    return { chatId: String(chatId), messageId: sent && sent.message_id, text };
   }));
 }
 
 async function sendApprovalResult(telegramApiFn, result, sentMessages) {
   const text = approvalResultText(result.decision);
+  const messages = approvalMessagesForResult(sentMessages, result);
   if (result.callbackQueryId) {
     await answerApprovalCallback(telegramApiFn, result.callbackQueryId, text);
   }
-  await clearApprovalButtons(telegramApiFn, sentMessages);
+  await markApprovalMessagesSettled(telegramApiFn, messages, result.decision);
   if (!result.callbackQueryId) {
     await telegramApiFn("sendMessage", {
       chat_id: result.chatId,
@@ -245,12 +246,23 @@ function approvalResultText(decision) {
 }
 
 async function sendApprovalTimeout(telegramApiFn, chatIds, sentMessages) {
-  await clearApprovalButtons(telegramApiFn, sentMessages);
+  await markApprovalMessagesSettled(telegramApiFn, sentMessages, "timeout");
   await Promise.all(chatIds.map((chatId) => telegramApiFn("sendMessage", {
     chat_id: chatId,
     text: "Approval request timed out / 승인 요청 시간이 만료되었습니다.",
     disable_web_page_preview: true
   }).catch(() => {})));
+}
+
+function approvalMessagesForResult(sentMessages, result) {
+  const messages = Array.isArray(sentMessages) ? [...sentMessages] : [];
+  if (result && result.chatId && result.messageId) {
+    messages.push({
+      chatId: String(result.chatId),
+      messageId: result.messageId
+    });
+  }
+  return dedupeTelegramMessages(messages);
 }
 
 async function answerApprovalCallback(telegramApiFn, callbackQueryId, text) {
@@ -261,14 +273,72 @@ async function answerApprovalCallback(telegramApiFn, callbackQueryId, text) {
   }).catch(() => {});
 }
 
-async function clearApprovalButtons(telegramApiFn, sentMessages) {
-  await Promise.all((sentMessages || []).map((message) => {
-    if (!message || !message.chatId || !message.messageId) return Promise.resolve();
-    return telegramApiFn("editMessageReplyMarkup", {
-      chat_id: message.chatId,
-      message_id: message.messageId
-    }).catch(() => {});
+async function markApprovalMessagesSettled(telegramApiFn, sentMessages, decision) {
+  await Promise.all(dedupeTelegramMessages(sentMessages).map(async (message) => {
+    const text = approvalSettledText(message.text, decision);
+    let updated = false;
+    if (text) {
+      updated = await editApprovalMessageText(telegramApiFn, message, text);
+    }
+    if (!updated) {
+      await clearOneApprovalButtons(telegramApiFn, message);
+    }
   }));
+}
+
+async function editApprovalMessageText(telegramApiFn, message, text) {
+  try {
+    await telegramApiFn("editMessageText", {
+      chat_id: message.chatId,
+      message_id: message.messageId,
+      text,
+      disable_web_page_preview: true,
+      reply_markup: emptyInlineKeyboard()
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function approvalSettledText(originalText, decision) {
+  const base = sanitize(originalText || "");
+  if (!base) return "";
+  const status = decision === "timeout"
+    ? "처리됨: 승인 요청 시간이 만료되었습니다."
+    : `처리됨: ${approvalResultText(decision)}`;
+  return truncateTelegramText([base, "", status].join("\n"));
+}
+
+async function clearApprovalButtons(telegramApiFn, sentMessages) {
+  await Promise.all(dedupeTelegramMessages(sentMessages).map((message) => clearOneApprovalButtons(telegramApiFn, message)));
+}
+
+async function clearOneApprovalButtons(telegramApiFn, message) {
+  const payload = {
+    chat_id: message.chatId,
+    message_id: message.messageId
+  };
+  await telegramApiFn("editMessageReplyMarkup", {
+    ...payload,
+    reply_markup: emptyInlineKeyboard()
+  }).catch(() => {});
+  await telegramApiFn("editMessageReplyMarkup", payload).catch(() => {});
+}
+
+function emptyInlineKeyboard() {
+  return { inline_keyboard: [] };
+}
+
+function dedupeTelegramMessages(messages) {
+  const seen = new Set();
+  return (Array.isArray(messages) ? messages : []).filter((message) => {
+    if (!message || !message.chatId || !message.messageId) return false;
+    const key = `${message.chatId}:${message.messageId}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function markApprovalHandledByCli(telegramApiFn, pending) {
@@ -283,12 +353,9 @@ async function markApprovalHandledByCli(telegramApiFn, pending) {
       chat_id: message.chatId,
       message_id: message.messageId,
       text,
-      disable_web_page_preview: true
-    }).catch(() => {});
-    await telegramApiFn("editMessageReplyMarkup", {
-      chat_id: message.chatId,
-      message_id: message.messageId
-    }).catch(() => {});
+      disable_web_page_preview: true,
+      reply_markup: emptyInlineKeyboard()
+    }).catch(() => clearOneApprovalButtons(telegramApiFn, message));
   }));
 }
 

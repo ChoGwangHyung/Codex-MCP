@@ -81,6 +81,9 @@ TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
+# Telegram-origin messages ask Codex to send the result back through Telegram.
+# Set to 0 to disable the injected reply contract.
+CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1
 # Optional native Codex permission approval:
 # CODEX_TELEGRAM_APPROVAL_CHAT_IDS=<chat-id>
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
@@ -292,11 +295,16 @@ Console relay details:
 - The bridge auto-detects a Codex console ancestor when possible.
 - `CODEX_TELEGRAM_CODEX_CONSOLE_PID` can explicitly select the target console.
 - `CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS` delays the Enter key after text input.
+- `CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1` is the default. Telegram-origin
+  prompts include a short instruction to call `telegram_send` with the result.
+  Set it to `0` if you want one-way relay only.
 - `CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1` skips old inbox messages and pairing messages.
 - If Codex app-server status is available, the relay uses it as an idle gate and retries while the target thread is busy.
 
-Relayed prompts contain only the Telegram `chatId` marker and the user's
-message text.
+Relayed prompts contain the Telegram `chatId` marker, the user's message text,
+and, by default, a short `telegram_send` reply instruction. The MCP cannot read
+Codex's final screen output by itself; this injected reply contract is how
+Telegram-origin requests get their result back in Telegram.
 
 Check relay state:
 
@@ -378,6 +386,9 @@ Behavior:
 
 - The approval prompt runs for Codex `PermissionRequest` events, such as shell
   escalation, managed-network approval, `apply_patch`, and MCP tool approvals.
+- When the MCP server starts with Telegram configured, it auto-installs the
+  user-level hook by default, so connected Codex sessions send native permission
+  requests to Telegram after restart/resume.
 - The bundled `PostToolUse` hook updates the Telegram message when a request
   falls back to the CLI prompt and is later approved there. CLI denial is not
   observable from current Codex hook events because the tool does not run.

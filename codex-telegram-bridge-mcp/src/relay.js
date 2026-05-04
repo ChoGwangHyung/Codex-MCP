@@ -357,11 +357,19 @@ function formatRelayPrompt(message) {
 
 function formatConsoleRelayPrompt(message) {
   const text = singleLine(sanitize(message.text));
-  return `[Telegram chatId ${message.chatId}] ${text}`.trim();
+  const prompt = `[Telegram chatId ${message.chatId}] ${text}`.trim();
+  const instruction = relayReplyInstructionLine(message);
+  return instruction ? `${prompt} ${instruction}`.trim() : prompt;
 }
 
-function relayReplyInstructionLines() {
-  return [];
+function relayReplyInstructionLines(message) {
+  const instruction = relayReplyInstructionLine(message);
+  return instruction ? ["", instruction] : [];
+}
+
+function relayReplyInstructionLine(message) {
+  if (!relayReplyRequired()) return "";
+  return `Required: after completing this Telegram-origin request, call telegram_send with chatId ${message.chatId} and a concise result.`;
 }
 
 async function resolveAppServerEndpoint() {

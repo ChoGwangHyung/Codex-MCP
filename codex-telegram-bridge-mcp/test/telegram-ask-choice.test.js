@@ -82,6 +82,7 @@ function telegramResponse(result) {
   assert.equal(result.userId, "777");
   assert.ok(apiMethods.some((call) => call.method === "answerCallbackQuery"));
   assert.ok(apiMethods.some((call) => call.method === "editMessageText" && /선택됨: 진행/.test(call.payload.text)));
+  assert.ok(apiMethods.some((call) => call.method === "editMessageText" && call.payload.reply_markup && call.payload.reply_markup.inline_keyboard.length === 0));
 })().finally(() => {
   global.fetch = originalFetch;
 }).catch((error) => {

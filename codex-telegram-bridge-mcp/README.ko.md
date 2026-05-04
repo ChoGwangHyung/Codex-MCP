@@ -82,6 +82,9 @@ TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
+# Telegram에서 들어온 요청은 결과를 Telegram으로 다시 보내도록 지시합니다.
+# 한 방향 relay만 원하면 0으로 설정하세요.
+CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1
 # 선택 native Codex permission approval:
 # CODEX_TELEGRAM_APPROVAL_CHAT_IDS=<chat-id>
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
@@ -292,10 +295,16 @@ Console relay 세부 사항:
 - 가능하면 bridge process의 ancestor 중 Codex console을 자동 감지합니다.
 - `CODEX_TELEGRAM_CODEX_CONSOLE_PID`로 대상 console을 명시할 수 있습니다.
 - `CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS`는 text 입력 후 Enter 전송 지연입니다.
+- `CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1`이 기본값입니다. Telegram에서 들어온
+  prompt에는 결과를 `telegram_send`로 다시 보내라는 짧은 지시가 포함됩니다.
+  한 방향 relay만 원하면 `0`으로 설정하세요.
 - `CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1`은 과거 inbox 메시지와 pairing 메시지를 건너뜁니다.
 - Codex app-server 상태를 읽을 수 있으면 idle gate로 사용하고, 대상 thread가 busy이면 재시도합니다.
 
-relay prompt는 Telegram `chatId` 표시와 사용자 메시지 본문만 포함합니다.
+relay prompt는 Telegram `chatId` 표시, 사용자 메시지 본문, 그리고 기본적으로
+짧은 `telegram_send` 회신 지시를 포함합니다. MCP가 Codex 최종 화면 출력을 직접
+읽는 것은 아니므로, Telegram에서 들어온 요청의 결과 회신은 이 injected reply
+contract를 통해 처리합니다.
 
 relay 상태 확인:
 
@@ -377,6 +386,9 @@ statusMessage = "Updating Telegram approval state"
 
 - approval prompt는 shell escalation, managed-network approval, `apply_patch`,
   MCP tool approval 같은 Codex `PermissionRequest` 이벤트에서 실행됩니다.
+- MCP 서버가 Telegram 설정과 함께 시작되면 user-level hook을 기본으로 자동
+  설치합니다. 그래서 restart/resume 이후 연결된 Codex 세션의 native permission
+  request는 Telegram으로 전달됩니다.
 - bundled `PostToolUse` hook은 요청이 CLI prompt로 fallback된 뒤 CLI에서 승인되어
   tool이 실행되면 Telegram 메시지를 승인 처리 상태로 업데이트합니다. CLI 거부는
   tool이 실행되지 않기 때문에 현재 Codex hook 이벤트만으로는 확정 감지할 수
