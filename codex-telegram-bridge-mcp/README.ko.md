@@ -454,6 +454,18 @@ Access JSON 저장 값:
 - `pending`: 임시 pairing code.
 - `dmPolicy`: `allowlist` 또는 `disabled`.
 
+## 여러 MCP 인스턴스
+
+여러 Codex 세션에서 같은 bot token으로 이 MCP 서버를 실행할 수 있습니다. bridge는
+Telegram `getUpdates`에 token 단위 cross-process lock을 걸고, local state write에는
+state-file lock을 걸기 때문에 여러 monitor가 동시에 떠도 Telegram long polling
+충돌이나 runtime state 파일 손상을 피합니다.
+
+단, Telegram update는 bot token 기준으로 한 번만 소비됩니다. 같은 bot token을 쓰는
+여러 Codex 세션이 서로 다른 runtime state 파일을 쓰면, 특정 메시지는 그 update를
+받은 인스턴스 하나에만 relay됩니다. 하나의 공유 relay target이면 같은 runtime state
+파일을 쓰고, 세션별 독립 routing이 필요하면 bot token 또는 chat을 분리하세요.
+
 ## 보안 메모
 
 - 이 bridge는 local-first 구조이며 기본적으로 public inbound service를 열지

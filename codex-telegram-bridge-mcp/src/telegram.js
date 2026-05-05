@@ -15,7 +15,12 @@ const {
   assertTelegram,
   bridgeEnabled
 } = require("./config.js");
-const { readTelegramState, writeTelegramState } = require("./state.js");
+const {
+  readTelegramState,
+  writeTelegramState,
+  withTelegramStateLock,
+  withTelegramUpdateLock
+} = require("./state.js");
 const { normalizeTimeout, normalizeInteger, delay, sanitize } = require("./util.js");
 const {
   approvalRequestText,
@@ -278,9 +283,6 @@ async function telegramSyncOffset() {
   await withPollLock(async () => {
     for (let drainCount = 0; drainCount < 100; drainCount += 1) {
       const updates = await fetchTelegramUpdates(0);
-      const state = readTelegramState();
-      advanceUpdateOffset(state, updates);
-      writeTelegramState(state);
       if (!Array.isArray(updates) || updates.length < 100) break;
     }
   });
@@ -440,15 +442,17 @@ async function pollAndStoreTelegramUpdates(timeoutSeconds) {
 
 async function pollAndProcessTelegramUpdates(timeoutSeconds) {
   const updates = await fetchTelegramUpdates(timeoutSeconds);
-  const state = readTelegramState();
-  advanceUpdateOffset(state, updates);
-  appendAllowedMessages(state, updates);
-  appendApprovalCallbackMessages(state, updates);
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    advanceUpdateOffset(state, updates);
+    appendAllowedMessages(state, updates);
+    appendApprovalCallbackMessages(state, updates);
+    state.lastPollAt = new Date().toISOString();
+    monitorLastPollAt = state.lastPollAt;
+    if (monitorLastErrorAt) state.lastErrorAt = monitorLastErrorAt;
+    writeTelegramState(state);
+  });
   await processChoiceCallbacks(updates);
-  state.lastPollAt = new Date().toISOString();
-  monitorLastPollAt = state.lastPollAt;
-  if (monitorLastErrorAt) state.lastErrorAt = monitorLastErrorAt;
-  writeTelegramState(state);
   notifyChoiceWaiters();
   notifyInboxWaiters();
 }
@@ -469,11 +473,26 @@ async function withPollLock(work) {
 }
 
 async function fetchTelegramUpdates(timeoutSeconds) {
-  return telegramApi("getUpdates", {
-    offset: Number(readTelegramState().updateOffset || 0),
-    timeout: timeoutSeconds,
-    limit: 100,
-    allowed_updates: ["message", "callback_query"]
+  return withTelegramUpdateLock(async () => {
+    const offset = await readUpdateOffset();
+    const updates = await telegramApi("getUpdates", {
+      offset,
+      timeout: timeoutSeconds,
+      limit: 100,
+      allowed_updates: ["message", "callback_query"]
+    });
+    await withTelegramStateLock(async () => {
+      const state = readTelegramState();
+      advanceUpdateOffset(state, updates);
+      writeTelegramState(state);
+    });
+    return updates;
+  });
+}
+
+async function readUpdateOffset() {
+  return withTelegramStateLock(async () => {
+    return Number(readTelegramState().updateOffset || 0);
   });
 }
 

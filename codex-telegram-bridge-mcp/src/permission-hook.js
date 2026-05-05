@@ -10,7 +10,9 @@ const {
 } = require("./config.js");
 const {
   readTelegramState,
-  writeTelegramState
+  writeTelegramState,
+  withTelegramStateLock,
+  withTelegramUpdateLock
 } = require("./state.js");
 const { telegramApi } = require("./telegram.js");
 const {
@@ -190,7 +192,7 @@ async function requestTelegramPermissionApproval({
 
   const deadline = now() + timeoutMs;
   while (now() < deadline) {
-    const inboxDecision = takeMatchingInboxDecision(chatIds, code, startedAt);
+    const inboxDecision = await takeMatchingInboxDecision(chatIds, code, startedAt);
     if (inboxDecision) {
       await sendApprovalResult(telegramApiFn, inboxDecision, sentMessages);
       forgetPendingApproval(approvalKey);
@@ -199,7 +201,7 @@ async function requestTelegramPermissionApproval({
 
     const remainingMs = Math.max(1000, deadline - now());
     const updates = await fetchTelegramUpdates(telegramApiFn, Math.min(DEFAULT_POLL_TIMEOUT_SEC, Math.ceil(remainingMs / 1000)));
-    const updateDecision = storeUpdatesAndFindDecision(updates, chatIds, code, startedAt);
+    const updateDecision = await storeUpdatesAndFindDecision(updates, chatIds, code, startedAt);
     if (updateDecision) {
       await sendApprovalResult(telegramApiFn, updateDecision, sentMessages);
       forgetPendingApproval(approvalKey);
@@ -367,17 +369,22 @@ async function syncTelegramOffset(telegramApiFn) {
 }
 
 async function fetchTelegramUpdates(telegramApiFn, timeoutSeconds) {
-  const state = readTelegramState();
-  const updates = await telegramApiFn("getUpdates", {
-    offset: Number(state.updateOffset || 0),
-    timeout: timeoutSeconds,
-    limit: 100,
-    allowed_updates: ["message", "callback_query"]
-  });
-  const nextState = readTelegramState();
-  advanceUpdateOffset(nextState, updates);
-  writeTelegramState(nextState);
-  return updates;
+  return withTelegramStateLock(async () => {
+    return Number(readTelegramState().updateOffset || 0);
+  }).then((offset) => withTelegramUpdateLock(async () => {
+    const updates = await telegramApiFn("getUpdates", {
+      offset,
+      timeout: timeoutSeconds,
+      limit: 100,
+      allowed_updates: ["message", "callback_query"]
+    });
+    await withTelegramStateLock(async () => {
+      const nextState = readTelegramState();
+      advanceUpdateOffset(nextState, updates);
+      writeTelegramState(nextState);
+    });
+    return updates;
+  }));
 }
 
 function advanceUpdateOffset(state, updates) {
@@ -388,63 +395,67 @@ function advanceUpdateOffset(state, updates) {
   }
 }
 
-function takeMatchingInboxDecision(chatIds, code, startedAt) {
-  const selected = new Set(chatIds.map(String));
-  const state = readTelegramState();
-  const index = state.inbox.findIndex((message) => {
-    if (!selected.has(String(message.chatId))) return false;
-    if (!isMessageAfter(message, startedAt)) return false;
-    return Boolean(parseApprovalDecision(message.text, code));
+async function takeMatchingInboxDecision(chatIds, code, startedAt) {
+  return withTelegramStateLock(async () => {
+    const selected = new Set(chatIds.map(String));
+    const state = readTelegramState();
+    const index = state.inbox.findIndex((message) => {
+      if (!selected.has(String(message.chatId))) return false;
+      if (!isMessageAfter(message, startedAt)) return false;
+      return Boolean(parseApprovalDecision(message.text, code));
+    });
+    if (index < 0) return null;
+    const [message] = state.inbox.splice(index, 1);
+    writeTelegramState(state);
+    return {
+      decision: parseApprovalDecision(message.text, code),
+      chatId: String(message.chatId),
+      code,
+      text: message.text
+    };
   });
-  if (index < 0) return null;
-  const [message] = state.inbox.splice(index, 1);
-  writeTelegramState(state);
-  return {
-    decision: parseApprovalDecision(message.text, code),
-    chatId: String(message.chatId),
-    code,
-    text: message.text
-  };
 }
 
-function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
-  const selected = new Set(chatIds.map(String));
-  const allowed = allowedChatIds();
-  const state = readTelegramState();
-  const seen = new Set(state.inbox.map((message) => message.id));
-  let decision = null;
+async function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
+  return withTelegramStateLock(async () => {
+    const selected = new Set(chatIds.map(String));
+    const allowed = allowedChatIds();
+    const state = readTelegramState();
+    const seen = new Set(state.inbox.map((message) => message.id));
+    let decision = null;
 
-  for (const update of Array.isArray(updates) ? updates : []) {
-    const callbackDecision = approvalCallbackFromUpdate(update, selected, code);
-    if (callbackDecision) {
-      decision = callbackDecision;
-      continue;
-    }
-
-    const message = messageFromUpdate(update);
-    if (!message || !allowed.has(message.chatId)) continue;
-
-    if (selected.has(message.chatId) && isMessageAfter(message, startedAt)) {
-      const parsedDecision = parseApprovalDecision(message.text, code);
-      if (parsedDecision) {
-        decision = {
-          decision: parsedDecision,
-          chatId: message.chatId,
-          code,
-          text: message.text
-        };
+    for (const update of Array.isArray(updates) ? updates : []) {
+      const callbackDecision = approvalCallbackFromUpdate(update, selected, code);
+      if (callbackDecision) {
+        decision = callbackDecision;
         continue;
+      }
+
+      const message = messageFromUpdate(update);
+      if (!message || !allowed.has(message.chatId)) continue;
+
+      if (selected.has(message.chatId) && isMessageAfter(message, startedAt)) {
+        const parsedDecision = parseApprovalDecision(message.text, code);
+        if (parsedDecision) {
+          decision = {
+            decision: parsedDecision,
+            chatId: message.chatId,
+            code,
+            text: message.text
+          };
+          continue;
+        }
+      }
+
+      if (!seen.has(message.id)) {
+        seen.add(message.id);
+        state.inbox.push(message);
       }
     }
 
-    if (!seen.has(message.id)) {
-      seen.add(message.id);
-      state.inbox.push(message);
-    }
-  }
-
-  writeTelegramState(state);
-  return decision;
+    writeTelegramState(state);
+    return decision;
+  });
 }
 
 function approvalCallbackFromUpdate(update, selected, code) {

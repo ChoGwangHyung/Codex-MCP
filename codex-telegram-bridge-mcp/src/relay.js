@@ -19,7 +19,11 @@ const {
   relayTargetThreadId,
   telegramEnabled
 } = require("./config.js");
-const { readTelegramState, writeTelegramState } = require("./state.js");
+const {
+  readTelegramState,
+  writeTelegramState,
+  withTelegramStateLock
+} = require("./state.js");
 const {
   execFileText,
   normalizePath,
@@ -38,6 +42,7 @@ let relayLastInjectedAt = "";
 let relayLastThreadId = "";
 let relayLastConsolePid = "";
 let relayEndpointCache = { value: "", resolvedAt: 0 };
+const RELAY_INJECTING_STALE_MS = 120000;
 
 function startTelegramRelay() {
   if (relayStarted || !relayEnabled() || !telegramEnabled()) return;
@@ -81,6 +86,19 @@ function scheduleRelayPendingMessages() {
 async function relayPendingMessages() {
   relayRunning = true;
   try {
+    while (true) {
+      const claim = await claimRelayMessage();
+      if (!claim) break;
+      const keepGoing = await processRelayClaim(claim);
+      if (!keepGoing) break;
+    }
+  } finally {
+    relayRunning = false;
+  }
+}
+
+async function claimRelayMessage() {
+  return withTelegramStateLock(async () => {
     const state = readTelegramState();
     const allowed = allowedChatIds();
     let changed = false;
@@ -99,72 +117,113 @@ async function relayPendingMessages() {
       message.relayLastAttemptAt = new Date().toISOString();
       message.relayAttempts = Number(message.relayAttempts || 0) + 1;
       writeTelegramState(state);
+      return {
+        mode: relayMode(),
+        message: { ...message }
+      };
+    }
 
-      const mode = relayMode();
-      let result;
-      if (mode === "app-server") {
-        const target = await findRelayTargetThread();
-        const status = target.thread.status && target.thread.status.type || "unknown";
-        if (status !== "idle") {
-          relayLastError = `target thread is ${status}`;
-          relayLastErrorAt = new Date().toISOString();
+    if (changed) writeTelegramState(state);
+    return null;
+  });
+}
+
+async function processRelayClaim(claim) {
+  const { mode, message } = claim;
+  try {
+    let result;
+    if (mode === "app-server") {
+      const target = await findRelayTargetThread();
+      const status = target.thread.status && target.thread.status.type || "unknown";
+      if (status !== "idle") {
+        relayLastError = `target thread is ${status}`;
+        relayLastErrorAt = new Date().toISOString();
+        await updateClaimedRelayMessage(message.id, (state, current) => {
           state.relay.lastError = relayLastError;
           state.relay.lastErrorAt = relayLastErrorAt;
-          message.relayStatus = "pending";
-          changed = true;
-          break;
-        }
-        result = await injectMessageIntoCodexAppServer(target.endpoint, target.thread.id, message);
-        relayLastThreadId = target.thread.id;
-        message.relayThreadId = target.thread.id;
-        message.relayTurnId = result && result.turn && result.turn.id || "";
-      } else {
-        const status = await relayConsoleThreadStatus();
-        if (status && status !== "idle") {
-          relayLastError = `target thread is ${status}`;
-          relayLastErrorAt = new Date().toISOString();
-          state.relay.lastError = relayLastError;
-          state.relay.lastErrorAt = relayLastErrorAt;
-          message.relayStatus = "pending";
-          changed = true;
-          break;
-        }
-        const target = await findCodexConsoleTarget();
-        result = await injectMessageIntoCodexConsole(target, message);
-        relayLastConsolePid = String(target.processId || "");
-        relayLastThreadId = target.threadId || relayTargetThreadId() || "";
-        message.relayConsolePid = relayLastConsolePid;
-        message.relayThreadId = relayLastThreadId;
-        message.relayTurnId = "";
+          current.relayStatus = "pending";
+        });
+        return false;
       }
+      result = await injectMessageIntoCodexAppServer(target.endpoint, target.thread.id, message);
+      relayLastThreadId = target.thread.id;
+    } else {
+      const status = await relayConsoleThreadStatus();
+      if (status && status !== "idle") {
+        relayLastError = `target thread is ${status}`;
+        relayLastErrorAt = new Date().toISOString();
+        await updateClaimedRelayMessage(message.id, (state, current) => {
+          state.relay.lastError = relayLastError;
+          state.relay.lastErrorAt = relayLastErrorAt;
+          current.relayStatus = "pending";
+        });
+        return false;
+      }
+      const target = await findCodexConsoleTarget();
+      result = await injectMessageIntoCodexConsole(target, message);
+      relayLastConsolePid = String(target.processId || "");
+      relayLastThreadId = target.threadId || relayTargetThreadId() || "";
+    }
 
-      relayLastInjectedAt = new Date().toISOString();
-      relayLastError = "";
-      relayLastErrorAt = "";
-      message.relayStatus = "delivered";
-      message.relayDeliveredAt = relayLastInjectedAt;
-      message.relayMode = mode;
-      message.relayResult = result;
+    relayLastInjectedAt = new Date().toISOString();
+    relayLastError = "";
+    relayLastErrorAt = "";
+    await updateClaimedRelayMessage(message.id, (state, current) => {
+      current.relayStatus = "delivered";
+      current.relayDeliveredAt = relayLastInjectedAt;
+      current.relayMode = mode;
+      current.relayResult = result;
+      current.relayThreadId = relayLastThreadId;
+      if (mode === "app-server") {
+        current.relayTurnId = result && result.turn && result.turn.id || "";
+      } else {
+        current.relayConsolePid = relayLastConsolePid;
+        current.relayTurnId = "";
+      }
       state.relay.lastThreadId = relayLastThreadId;
       state.relay.lastConsolePid = relayLastConsolePid;
       state.relay.lastInjectedAt = relayLastInjectedAt;
       state.relay.lastError = "";
       state.relay.lastErrorAt = "";
-      changed = true;
-    }
-
-    if (changed) writeTelegramState(state);
-  } finally {
-    relayRunning = false;
+    });
+    return true;
+  } catch (error) {
+    relayLastError = sanitize(error.message || "relay error");
+    relayLastErrorAt = new Date().toISOString();
+    await updateClaimedRelayMessage(message.id, (state, current) => {
+      current.relayStatus = "failed";
+      current.relayLastError = relayLastError;
+      current.relayLastErrorAt = relayLastErrorAt;
+      state.relay.lastError = relayLastError;
+      state.relay.lastErrorAt = relayLastErrorAt;
+    });
+    throw error;
   }
+}
+
+async function updateClaimedRelayMessage(messageId, update) {
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    state.relay = state.relay && typeof state.relay === "object" ? state.relay : {};
+    const current = state.inbox.find((message) => message.id === messageId);
+    if (!current) return;
+    update(state, current);
+    writeTelegramState(state);
+  });
 }
 
 function isRelayCandidate(message, state) {
   if (!message || message.relayStatus === "delivered" || /^skipped_/.test(String(message.relayStatus || ""))) {
     return false;
   }
+  if (message.relayStatus === "injecting" && !isStaleRelayInjection(message)) return false;
   if (shouldSkipRelayMessage(message, state)) return false;
   return ["", "pending", "failed", "injecting"].includes(String(message.relayStatus || ""));
+}
+
+function isStaleRelayInjection(message) {
+  const lastAttemptAt = Date.parse(message.relayLastAttemptAt || "");
+  return !Number.isFinite(lastAttemptAt) || Date.now() - lastAttemptAt > RELAY_INJECTING_STALE_MS;
 }
 
 function shouldSkipRelayMessage(message, state) {

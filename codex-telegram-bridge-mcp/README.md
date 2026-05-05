@@ -455,6 +455,19 @@ Access JSON stores:
 - `pending`: temporary pairing codes.
 - `dmPolicy`: `allowlist` or `disabled`.
 
+## Multiple MCP Instances
+
+Several Codex sessions can run this MCP server with the same bot token. The
+bridge uses a token-scoped cross-process lock around Telegram `getUpdates`, and
+a state-file lock around local state writes, so multiple monitors do not collide
+with Telegram long polling or corrupt the runtime state file.
+
+A Telegram update is still consumed once per bot token. If separate Codex
+sessions use the same bot token but different runtime state files, only the
+instance that receives an update will relay that specific message. Use the same
+runtime state file for one shared relay target, or separate bot tokens/chats
+when each session needs independent routing.
+
 ## Security Notes
 
 - The bridge is local-first and does not expose an inbound public service by
