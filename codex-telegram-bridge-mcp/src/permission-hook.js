@@ -48,7 +48,7 @@ function systemMessageOutput(message) {
 }
 
 async function handlePermissionHook(input, options = {}) {
-  if (!input || input.hook_event_name !== "PermissionRequest") {
+  if (!isPermissionRequestEvent(input)) {
     return "";
   }
   if (process.env.CODEX_TELEGRAM_PERMISSION_APPROVAL_ENABLED === "0") {
@@ -103,7 +103,7 @@ async function handlePermissionHook(input, options = {}) {
 }
 
 async function handlePostToolUseHook(input, options = {}) {
-  if (!input || input.hook_event_name !== "PostToolUse") {
+  if (!isPostToolUseEvent(input)) {
     return "";
   }
   if (process.env.CODEX_TELEGRAM_CLI_APPROVAL_SYNC_ENABLED === "0") {
@@ -140,7 +140,7 @@ function permissionTimeoutBehavior() {
 }
 
 function buildPermissionApprovalRequest(input) {
-  const toolName = singleLine(input.tool_name || "unknown");
+  const toolName = normalizedToolName(input);
   return {
     title: `Codex permission request: ${toolName}`,
     message: formatPermissionDetails(input)
@@ -148,17 +148,17 @@ function buildPermissionApprovalRequest(input) {
 }
 
 function formatPermissionDetails(input) {
-  const toolInput = input.tool_input && typeof input.tool_input === "object"
-    ? input.tool_input
-    : {};
-  const description = toolInput.description ? singleLine(toolInput.description) : "";
-  const command = toolInput.command ? String(toolInput.command) : "";
+  const toolInput = normalizedToolInput(input);
+  const toolName = normalizedToolName(input);
+  const description = extractDescription(input, toolInput);
+  const command = extractCommand(input, toolInput);
+  const cwd = extractCwd(input, toolInput);
   const lines = [
-    `Tool: ${singleLine(input.tool_name || "unknown")}`,
+    `Tool: ${toolName}`,
     description ? `Reason: ${description}` : "",
-    input.cwd ? `Cwd: ${singleLine(input.cwd)}` : "",
-    input.session_id ? `Session: ${singleLine(input.session_id)}` : "",
-    input.turn_id ? `Turn: ${singleLine(input.turn_id)}` : ""
+    cwd ? `Cwd: ${cwd}` : "",
+    extractSessionId(input) ? `Session: ${extractSessionId(input)}` : "",
+    extractTurnId(input) ? `Turn: ${extractTurnId(input)}` : ""
   ].filter(Boolean);
 
   if (command) {
@@ -167,6 +167,139 @@ function formatPermissionDetails(input) {
     lines.push("", "Input:", truncateBlock(JSON.stringify(toolInput, null, 2), 1600));
   }
   return truncateTelegramText(lines.join("\n"));
+}
+
+function hookEventName(input) {
+  return singleLine(
+    input && (input.hook_event_name || input.hookEventName || input.event_name || input.eventName || input.type) || ""
+  );
+}
+
+function normalizedEventName(input) {
+  return hookEventName(input).replace(/[-_\s]/g, "").toLowerCase();
+}
+
+function isPermissionRequestEvent(input) {
+  return Boolean(input) && normalizedEventName(input) === "permissionrequest";
+}
+
+function isPostToolUseEvent(input) {
+  return Boolean(input) && normalizedEventName(input) === "posttooluse";
+}
+
+function normalizedToolName(input) {
+  const value = input && (input.tool_name || input.toolName || input.tool || input.name);
+  if (value) return singleLine(value);
+  const toolInput = normalizedToolInput(input);
+  if (extractCommand(input, toolInput)) return "shell_command";
+  return "unknown";
+}
+
+function normalizedToolInput(input) {
+  if (!input || typeof input !== "object") return {};
+  for (const key of ["tool_input", "toolInput", "input", "arguments", "params"]) {
+    if (input[key] && typeof input[key] === "object" && !Array.isArray(input[key])) {
+      return input[key];
+    }
+  }
+
+  const derived = {};
+  for (const key of [
+    "command",
+    "cmd",
+    "script",
+    "argv",
+    "args",
+    "description",
+    "justification",
+    "reason",
+    "message",
+    "cwd",
+    "workdir",
+    "working_directory",
+    "sandbox_permissions",
+    "timeout_ms",
+    "prefix_rule"
+  ]) {
+    if (input[key] !== undefined) derived[key] = input[key];
+  }
+  return derived;
+}
+
+function extractDescription(input, toolInput) {
+  for (const value of [
+    toolInput && toolInput.description,
+    toolInput && toolInput.justification,
+    toolInput && toolInput.reason,
+    input && input.description,
+    input && input.justification,
+    input && input.reason,
+    input && input.message
+  ]) {
+    const text = singleLine(value || "");
+    if (text) return text;
+  }
+  return "";
+}
+
+function extractCommand(input, toolInput) {
+  for (const value of [
+    toolInput && toolInput.command,
+    toolInput && toolInput.cmd,
+    toolInput && toolInput.script,
+    input && input.command,
+    input && input.cmd,
+    input && input.script
+  ]) {
+    if (value !== undefined && value !== null && String(value).trim()) {
+      return String(value);
+    }
+  }
+
+  for (const value of [
+    toolInput && toolInput.argv,
+    toolInput && toolInput.args,
+    input && input.argv,
+    input && input.args
+  ]) {
+    if (Array.isArray(value) && value.length > 0) {
+      return formatArgv(value);
+    }
+  }
+
+  return "";
+}
+
+function formatArgv(args) {
+  return args.map((arg) => {
+    const value = String(arg);
+    return /[\s"]/u.test(value)
+      ? JSON.stringify(value)
+      : value;
+  }).join(" ");
+}
+
+function extractCwd(input, toolInput) {
+  for (const value of [
+    input && input.cwd,
+    toolInput && toolInput.cwd,
+    toolInput && toolInput.workdir,
+    toolInput && toolInput.working_directory,
+    input && input.workdir,
+    input && input.working_directory
+  ]) {
+    const text = singleLine(value || "");
+    if (text) return text;
+  }
+  return "";
+}
+
+function extractSessionId(input) {
+  return singleLine(input && (input.session_id || input.sessionId) || "");
+}
+
+function extractTurnId(input) {
+  return singleLine(input && (input.turn_id || input.turnId) || "");
 }
 
 function truncateBlock(text, maxLength) {
@@ -492,11 +625,12 @@ function messageFromUpdate(update) {
 }
 
 function permissionApprovalKey(input) {
+  const toolInput = normalizedToolInput(input);
   const signature = {
-    sessionId: singleLine(input && input.session_id || ""),
-    cwd: singleLine(input && input.cwd || ""),
-    toolName: singleLine(input && input.tool_name || "unknown"),
-    toolInput: input && input.tool_input !== undefined ? input.tool_input : null
+    sessionId: extractSessionId(input),
+    cwd: extractCwd(input, toolInput),
+    toolName: normalizedToolName(input),
+    toolInput
   };
   return crypto.createHash("sha256").update(stableStringify(signature)).digest("hex");
 }
@@ -570,6 +704,7 @@ function prunePendingApprovals(pending) {
 function rememberAlwaysApproval(input, result) {
   if (process.env.CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED === "0") return;
   const key = permissionApprovalKey(input);
+  const toolInput = normalizedToolInput(input);
   const state = readTelegramState();
   const approvals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
     ? state.permissionAlwaysApprovals
@@ -577,9 +712,9 @@ function rememberAlwaysApproval(input, result) {
   approvals[key] = {
     key,
     scope: "session_exact_request",
-    sessionId: singleLine(input && input.session_id || ""),
-    cwd: singleLine(input && input.cwd || ""),
-    toolName: singleLine(input && input.tool_name || "unknown"),
+    sessionId: extractSessionId(input),
+    cwd: extractCwd(input, toolInput),
+    toolName: normalizedToolName(input),
     chatId: result && result.chatId ? String(result.chatId) : "",
     userId: result && result.userId ? String(result.userId) : "",
     approvedAt: new Date().toISOString()
@@ -632,7 +767,7 @@ async function runCli() {
   try {
     const raw = await readStdin();
     const input = raw.trim() ? JSON.parse(raw) : {};
-    const output = input.hook_event_name === "PostToolUse"
+    const output = isPostToolUseEvent(input)
       ? await handlePostToolUseHook(input)
       : await handlePermissionHook(input);
     if (output) process.stdout.write(`${output}\n`);

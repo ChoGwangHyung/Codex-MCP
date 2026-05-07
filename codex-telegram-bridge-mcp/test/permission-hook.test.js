@@ -65,6 +65,20 @@ assert.match(request.title, /Bash/);
 assert.match(request.message, /git push origin main/);
 assert.match(request.message, /Need to push changes/);
 
+const yesNoCommandApprovalInput = {
+  hookEventName: "permissionRequest",
+  sessionId: "session-yes-no",
+  turnId: "turn-yes-no",
+  cwd: "D:/repo",
+  command: "powershell -NoProfile -Command \"Write-Output ok\"",
+  justification: "Run a smoke-test command"
+};
+const yesNoRequest = buildPermissionApprovalRequest(yesNoCommandApprovalInput);
+assert.match(yesNoRequest.title, /shell_command/);
+assert.match(yesNoRequest.message, /powershell -NoProfile/);
+assert.match(yesNoRequest.message, /Run a smoke-test command/);
+assert.match(yesNoRequest.message, /session-yes-no/);
+
 const allowOutput = JSON.parse(permissionDecisionOutput("allow"));
 assert.equal(allowOutput.hookSpecificOutput.hookEventName, "PermissionRequest");
 assert.equal(allowOutput.hookSpecificOutput.decision.behavior, "allow");
@@ -125,6 +139,12 @@ async function telegramApiFn(method, payload) {
   const output = await handlePermissionHook(hookInput, { telegramApiFn });
   const parsed = JSON.parse(output);
   assert.equal(parsed.hookSpecificOutput.decision.behavior, "allow");
+
+  approvalCallbackData = "";
+  replied = false;
+  const yesNoOutput = await handlePermissionHook(yesNoCommandApprovalInput, { telegramApiFn });
+  const yesNoParsed = JSON.parse(yesNoOutput);
+  assert.equal(yesNoParsed.hookSpecificOutput.decision.behavior, "allow");
 
   apiCalls.length = 0;
   approvalButtonIndex = 1;

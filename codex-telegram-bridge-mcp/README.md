@@ -386,6 +386,10 @@ Behavior:
 
 - The approval prompt runs for Codex `PermissionRequest` events, such as shell
   escalation, managed-network approval, `apply_patch`, and MCP tool approvals.
+- CLI command prompts that look like `Would you like to run the following
+  command?` are handled when Codex emits them as `PermissionRequest` events. The
+  hook accepts both the standard `tool_input.command` payload and command-shaped
+  payloads such as `command`, `cmd`, or `argv`.
 - When the MCP server starts with Telegram configured, it auto-installs the
   user-level hook by default, so connected Codex sessions send native permission
   requests to Telegram after restart/resume.

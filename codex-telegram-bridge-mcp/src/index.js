@@ -10,6 +10,7 @@ const {
 const {
   formatConsoleRelayPrompt,
   formatRelayPrompt,
+  isApprovalDecisionRelayMessage,
   relayReplyInstructionLines
 } = require("./relay.js");
 
@@ -21,6 +22,7 @@ module.exports = {
   _test: {
     formatRelayPrompt,
     formatConsoleRelayPrompt,
+    isApprovalDecisionRelayMessage,
     relayReplyInstructionLines,
     relayEnabled,
     relayReplyRequired,

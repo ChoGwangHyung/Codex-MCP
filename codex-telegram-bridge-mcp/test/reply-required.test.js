@@ -45,3 +45,26 @@ process.env.CODEX_TELEGRAM_CODEX_REPLY_REQUIRED = "0";
 assert.equal(_test.relayReplyRequired(), false);
 assert.doesNotMatch(_test.formatRelayPrompt(message), /telegram_send/);
 assert.doesNotMatch(_test.formatConsoleRelayPrompt(message), /telegram_send/);
+
+assert.equal(_test.isApprovalDecisionRelayMessage({
+  chatId: "12345",
+  text: "always approve b79df2"
+}, {
+  permissionPendingApprovals: {
+    one: { code: "b79df2" }
+  }
+}), true);
+assert.equal(_test.isApprovalDecisionRelayMessage({
+  chatId: "12345",
+  text: "always approve b79df2",
+  approvalCode: "b79df2",
+  approvalDecision: "always_approved"
+}, {}), true);
+assert.equal(_test.isApprovalDecisionRelayMessage({
+  chatId: "12345",
+  text: "always approve b79df2"
+}, {
+  permissionPendingApprovals: {
+    one: { code: "abc123" }
+  }
+}), false);

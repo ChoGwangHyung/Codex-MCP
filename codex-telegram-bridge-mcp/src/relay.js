@@ -8,6 +8,9 @@ const {
   APP_SERVER_ENDPOINT_CACHE_MS
 } = require("./constants.js");
 const {
+  parseApprovalDecision
+} = require("./approval.js");
+const {
   allowedChatIds,
   relayConsolePid,
   relayConsoleSubmitDelayMs,
@@ -228,6 +231,7 @@ function isStaleRelayInjection(message) {
 
 function shouldSkipRelayMessage(message, state) {
   if (/^\/start\b/i.test(String(message.text || "").trim())) return true;
+  if (isApprovalDecisionRelayMessage(message, state)) return true;
   if (!relayIgnoreExisting()) return false;
   const startedAt = Date.parse(state.relay && state.relay.startedAt || "");
   const messageAt = Date.parse(message.receivedAt || message.date || "");
@@ -236,6 +240,7 @@ function shouldSkipRelayMessage(message, state) {
 
 function skipRelayReason(message, state) {
   if (/^\/start\b/i.test(String(message.text || "").trim())) return "skipped_command";
+  if (isApprovalDecisionRelayMessage(message, state)) return "skipped_approval";
   if (relayIgnoreExisting()) {
     const startedAt = Date.parse(state.relay && state.relay.startedAt || "");
     const messageAt = Date.parse(message.receivedAt || message.date || "");
@@ -244,6 +249,17 @@ function skipRelayReason(message, state) {
     }
   }
   return "skipped";
+}
+
+function isApprovalDecisionRelayMessage(message, state) {
+  if (message && message.approvalDecision && message.approvalCode) return true;
+  const text = String(message && message.text || "");
+  const pending = state && state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+    ? state.permissionPendingApprovals
+    : {};
+  return Object.values(pending).some((approval) => {
+    return approval && approval.code && Boolean(parseApprovalDecision(text, approval.code));
+  });
 }
 
 function markRelaySkipped(message, reason) {
@@ -551,5 +567,6 @@ module.exports = {
   telegramRelayStatus,
   formatRelayPrompt,
   formatConsoleRelayPrompt,
-  relayReplyInstructionLines
+  relayReplyInstructionLines,
+  isApprovalDecisionRelayMessage
 };

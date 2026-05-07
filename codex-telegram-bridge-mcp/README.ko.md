@@ -386,6 +386,10 @@ statusMessage = "Updating Telegram approval state"
 
 - approval prompt는 shell escalation, managed-network approval, `apply_patch`,
   MCP tool approval 같은 Codex `PermissionRequest` 이벤트에서 실행됩니다.
+- `Would you like to run the following command?`처럼 보이는 CLI command prompt도
+  Codex가 `PermissionRequest` 이벤트로 전달하는 경우 처리됩니다. hook은 표준
+  `tool_input.command` payload와 `command`, `cmd`, `argv` 같은 command-shaped
+  payload를 모두 인식합니다.
 - MCP 서버가 Telegram 설정과 함께 시작되면 user-level hook을 기본으로 자동
   설치합니다. 그래서 restart/resume 이후 연결된 Codex 세션의 native permission
   request는 Telegram으로 전달됩니다.

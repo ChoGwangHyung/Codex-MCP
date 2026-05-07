@@ -553,7 +553,11 @@ function appendApprovalCallbackMessages(state, updates) {
       date: rawMessage.date ? new Date(Number(rawMessage.date) * 1000).toISOString() : "",
       receivedAt: new Date().toISOString(),
       userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : "",
-      from: displayName(rawMessage)
+      from: displayName(rawMessage),
+      approvalCode: parsed.code,
+      approvalDecision: parsed.decision,
+      relayStatus: "skipped_approval",
+      relaySkippedAt: new Date().toISOString()
     });
     answerChoiceCallback(callback.id, approvalCallbackAnswerText(parsed.decision)).catch(() => {});
   }
