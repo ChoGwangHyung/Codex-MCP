@@ -91,7 +91,7 @@ function ensureCodexHooksFeature(text) {
   const featureHeaderIndex = lines.findIndex((line) => /^\s*\[features]\s*$/.test(line));
 
   if (featureHeaderIndex < 0) {
-    return appendSection(content, ["[features]", "codex_hooks = true"].join("\n"));
+    return appendSection(content, ["[features]", "hooks = true"].join("\n"));
   }
 
   let nextTableIndex = lines.length;
@@ -102,14 +102,22 @@ function ensureCodexHooksFeature(text) {
     }
   }
 
-  for (let index = featureHeaderIndex + 1; index < nextTableIndex; index += 1) {
+  let hasHooksFeature = false;
+  for (let index = nextTableIndex - 1; index > featureHeaderIndex; index -= 1) {
     if (/^\s*codex_hooks\s*=/.test(lines[index])) {
-      lines[index] = "codex_hooks = true";
-      return lines.join("\n").trimEnd();
+      lines.splice(index, 1);
+      nextTableIndex -= 1;
+      continue;
+    }
+    if (/^\s*hooks\s*=/.test(lines[index])) {
+      lines[index] = "hooks = true";
+      hasHooksFeature = true;
     }
   }
 
-  lines.splice(featureHeaderIndex + 1, 0, "codex_hooks = true");
+  if (!hasHooksFeature) {
+    lines.splice(featureHeaderIndex + 1, 0, "hooks = true");
+  }
   return lines.join("\n").trimEnd();
 }
 

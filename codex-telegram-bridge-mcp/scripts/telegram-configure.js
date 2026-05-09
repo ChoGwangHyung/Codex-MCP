@@ -453,7 +453,7 @@ function printPermissionHookSnippet() {
   const hookCommand = `node ${quoteForShell(PERMISSION_HOOK_SCRIPT)}`;
   console.log([
     "[features]",
-    "codex_hooks = true",
+    "hooks = true",
     "",
     "[[hooks.PermissionRequest]]",
     'matcher = "*"',

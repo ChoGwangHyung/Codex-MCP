@@ -345,7 +345,7 @@ The command prints a TOML snippet like this:
 
 ```toml
 [features]
-codex_hooks = true
+hooks = true
 
 [[hooks.PermissionRequest]]
 matcher = "*"
@@ -399,6 +399,9 @@ Behavior:
 - When the MCP server starts with Telegram configured, it auto-installs the
   user-level hook by default, so connected Codex sessions send native permission
   requests to Telegram after restart/resume.
+- Codex may require newly installed or changed hooks to be reviewed in `/hooks`
+  before they run. The bridge installs the hook configuration but does not mark
+  hooks reviewed on the user's behalf.
 - The bundled `PostToolUse` hook updates the Telegram message when a request
   falls back to the CLI prompt and is later approved there. CLI denial is not
   observable from current Codex hook events because the tool does not run.

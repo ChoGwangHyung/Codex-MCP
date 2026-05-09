@@ -344,7 +344,7 @@ node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js hook-sn
 
 ```toml
 [features]
-codex_hooks = true
+hooks = true
 
 [[hooks.PermissionRequest]]
 matcher = "*"
@@ -398,6 +398,9 @@ statusMessage = "Updating Telegram approval state"
 - MCP 서버가 Telegram 설정과 함께 시작되면 user-level hook을 기본으로 자동
   설치합니다. 그래서 restart/resume 이후 연결된 Codex 세션의 native permission
   request는 Telegram으로 전달됩니다.
+- Codex는 새로 설치되거나 변경된 hook에 대해 실행 전 `/hooks` review를 요구할
+  수 있습니다. bridge는 hook 설정을 설치하지만 사용자를 대신해 review 완료
+  상태로 표시하지는 않습니다.
 - bundled `PostToolUse` hook은 요청이 CLI prompt로 fallback된 뒤 CLI에서 승인되어
   tool이 실행되면 Telegram 메시지를 승인 처리 상태로 업데이트합니다. CLI 거부는
   tool이 실행되지 않기 때문에 현재 Codex hook 이벤트만으로는 확정 감지할 수

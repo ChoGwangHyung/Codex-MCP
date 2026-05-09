@@ -23,17 +23,22 @@ const {
 
 assert.equal(
   ensureCodexHooksFeature("model = \"gpt-5\"\n").trimEnd(),
-  "model = \"gpt-5\"\n\n[features]\ncodex_hooks = true"
+  "model = \"gpt-5\"\n\n[features]\nhooks = true"
 );
 
 assert.equal(
   ensureCodexHooksFeature("[features]\nfoo = true\n[projects.x]\ntrust_level = \"trusted\"\n"),
-  "[features]\ncodex_hooks = true\nfoo = true\n[projects.x]\ntrust_level = \"trusted\""
+  "[features]\nhooks = true\nfoo = true\n[projects.x]\ntrust_level = \"trusted\""
 );
 
 assert.equal(
   ensureCodexHooksFeature("[features]\ncodex_hooks = false\n"),
-  "[features]\ncodex_hooks = true"
+  "[features]\nhooks = true"
+);
+
+assert.equal(
+  ensureCodexHooksFeature("[features]\ncodex_hooks = true\nhooks = false\n"),
+  "[features]\nhooks = true"
 );
 
 const first = ensurePermissionHookInstalled();
@@ -41,7 +46,8 @@ assert.equal(first.installed, true);
 assert.equal(first.changed, true);
 const installed = fs.readFileSync(configFile, "utf8");
 assert.match(installed, /\[features]/);
-assert.match(installed, /codex_hooks = true/);
+assert.match(installed, /hooks = true/);
+assert.doesNotMatch(installed, /codex_hooks/);
 assert.match(installed, /\[\[hooks\.PermissionRequest]]/);
 assert.match(installed, /\[\[hooks\.PostToolUse]]/);
 assert.match(installed, /node hook\.js/);
