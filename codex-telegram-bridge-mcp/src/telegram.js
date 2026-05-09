@@ -10,10 +10,12 @@ const {
   monitorPollTimeoutSec,
   monitorBackoffMs,
   inboxMaxMessages,
+  downloadMaxBytes,
   telegramEnabled,
   allowedChatIds,
   assertTelegram,
-  bridgeEnabled
+  bridgeEnabled,
+  telegramDownloadDir
 } = require("./config.js");
 const {
   readTelegramState,
@@ -442,10 +444,11 @@ async function pollAndStoreTelegramUpdates(timeoutSeconds) {
 
 async function pollAndProcessTelegramUpdates(timeoutSeconds) {
   const updates = await fetchTelegramUpdates(timeoutSeconds);
+  const allowedMessages = await buildAllowedMessages(updates);
   await withTelegramStateLock(async () => {
     const state = readTelegramState();
     advanceUpdateOffset(state, updates);
-    appendAllowedMessages(state, updates);
+    appendAllowedMessages(state, allowedMessages);
     appendApprovalCallbackMessages(state, updates);
     state.lastPollAt = new Date().toISOString();
     monitorLastPollAt = state.lastPollAt;
@@ -504,28 +507,176 @@ function advanceUpdateOffset(state, updates) {
   }
 }
 
-function appendAllowedMessages(state, updates) {
+async function buildAllowedMessages(updates) {
   const allowed = allowedChatIds();
-  const seen = new Set(state.inbox.map((message) => message.id));
+  const messages = [];
   for (const update of Array.isArray(updates) ? updates : []) {
     const message = update.message;
     const chatId = message && message.chat && String(message.chat.id);
-    const text = message && typeof message.text === "string" ? sanitize(message.text) : "";
-    if (!chatId || !text || !allowed.has(chatId)) continue;
-    const id = `${update.update_id}:${message.message_id || 0}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    state.inbox.push({
-      id,
-      updateId: Number(update.update_id || 0),
-      messageId: Number(message.message_id || 0),
-      chatId,
-      text,
-      date: message.date ? new Date(Number(message.date) * 1000).toISOString() : "",
-      receivedAt: new Date().toISOString(),
-      userId: message.from && message.from.id !== undefined ? String(message.from.id) : "",
-      from: displayName(message)
-    });
+    if (!chatId || !allowed.has(chatId)) continue;
+    const inboxMessage = await inboxMessageFromTelegramUpdate(update, message);
+    if (inboxMessage) messages.push(inboxMessage);
+  }
+  return messages;
+}
+
+async function inboxMessageFromTelegramUpdate(update, message) {
+  const chatId = message && message.chat && String(message.chat.id);
+  const text = message && typeof message.text === "string" ? sanitize(message.text) : "";
+  const caption = message && typeof message.caption === "string" ? sanitize(message.caption) : "";
+  const attachment = await incomingAttachmentFromMessage(update, message);
+  const body = formatIncomingMessageText(text || caption, attachment);
+  if (!chatId || !body) return null;
+  return {
+    id: `${update.update_id}:${message.message_id || 0}`,
+    updateId: Number(update.update_id || 0),
+    messageId: Number(message.message_id || 0),
+    chatId,
+    text: body,
+    date: message.date ? new Date(Number(message.date) * 1000).toISOString() : "",
+    receivedAt: new Date().toISOString(),
+    userId: message.from && message.from.id !== undefined ? String(message.from.id) : "",
+    from: displayName(message),
+    attachments: attachment ? [attachment] : []
+  };
+}
+
+function formatIncomingMessageText(text, attachment) {
+  const lines = [];
+  const body = sanitize(text || "");
+  if (body) lines.push(body);
+  if (attachment) {
+    if (lines.length > 0) lines.push("");
+    lines.push(`Attachment: ${attachment.type}`);
+    if (attachment.localPath) lines.push(`Local file: ${attachment.localPath}`);
+    if (attachment.fileName) lines.push(`File name: ${attachment.fileName}`);
+    if (attachment.mimeType) lines.push(`MIME type: ${attachment.mimeType}`);
+    if (Number.isFinite(Number(attachment.fileSize))) lines.push(`Size: ${Number(attachment.fileSize)} bytes`);
+    if (attachment.fileId) lines.push(`Telegram file_id: ${attachment.fileId}`);
+    if (attachment.downloadError) lines.push(`Download error: ${attachment.downloadError}`);
+  }
+  return lines.join("\n").trim();
+}
+
+async function incomingAttachmentFromMessage(update, message) {
+  const media = incomingMediaFromMessage(message);
+  if (!media) return null;
+  const base = {
+    type: media.type,
+    fileId: media.fileId,
+    fileUniqueId: media.fileUniqueId || "",
+    fileName: media.fileName || "",
+    mimeType: media.mimeType || "",
+    fileSize: Number(media.fileSize || 0)
+  };
+
+  try {
+    return {
+      ...base,
+      ...(await downloadIncomingTelegramFile(media, update, message))
+    };
+  } catch (error) {
+    return {
+      ...base,
+      downloadError: sanitize(error.message || "download failed")
+    };
+  }
+}
+
+function incomingMediaFromMessage(message) {
+  if (!message || typeof message !== "object") return null;
+  if (Array.isArray(message.photo) && message.photo.length > 0) {
+    const photo = [...message.photo].sort((left, right) => Number(right.file_size || 0) - Number(left.file_size || 0))[0];
+    return {
+      type: "photo",
+      fileId: photo.file_id,
+      fileUniqueId: photo.file_unique_id,
+      fileSize: photo.file_size,
+      mimeType: "image/jpeg"
+    };
+  }
+  if (message.document) return documentLikeMedia("document", message.document);
+  if (message.animation) return documentLikeMedia("animation", message.animation);
+  if (message.video) return documentLikeMedia("video", message.video);
+  if (message.audio) return documentLikeMedia("audio", message.audio);
+  if (message.voice) return documentLikeMedia("voice", message.voice);
+  return null;
+}
+
+function documentLikeMedia(type, value) {
+  return {
+    type,
+    fileId: value.file_id,
+    fileUniqueId: value.file_unique_id,
+    fileName: value.file_name || "",
+    mimeType: value.mime_type || "",
+    fileSize: value.file_size
+  };
+}
+
+async function downloadIncomingTelegramFile(media, update, message) {
+  if (!media.fileId) throw new Error("Telegram media has no file_id");
+  const file = await telegramApi("getFile", { file_id: media.fileId });
+  const filePath = String(file && file.file_path || "");
+  if (!filePath) throw new Error("Telegram getFile did not return file_path");
+
+  const maxBytes = downloadMaxBytes();
+  const expectedSize = Number(file.file_size || media.fileSize || 0);
+  if (expectedSize > maxBytes) {
+    throw new Error(`Telegram file is too large to download: ${expectedSize} bytes, max ${maxBytes} bytes`);
+  }
+
+  const fileName = incomingDownloadFileName(media, filePath, update, message);
+  const localPath = path.join(telegramDownloadDir(), fileName);
+  const actualSize = await downloadTelegramFileContent(filePath, localPath, maxBytes);
+  return {
+    localPath,
+    fileName,
+    fileSize: actualSize,
+    telegramFilePath: filePath
+  };
+}
+
+function incomingDownloadFileName(media, filePath, update, message) {
+  const fallback = `${media.type || "file"}${path.extname(path.posix.basename(filePath)) || ".bin"}`;
+  const original = media.fileName || path.posix.basename(filePath) || fallback;
+  const prefix = [
+    Number(update && update.update_id || 0),
+    Number(message && message.message_id || 0),
+    media.type || "file"
+  ].join("-");
+  return safeFileName(`${prefix}-${original}`);
+}
+
+async function downloadTelegramFileContent(filePath, localPath, maxBytes) {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  const encodedPath = String(filePath).split("/").map(encodeURIComponent).join("/");
+  const response = await fetch(`https://api.telegram.org/file/bot${token}/${encodedPath}`);
+  if (!response.ok) {
+    throw new Error(`Telegram file download failed: ${sanitize(response.statusText || response.status || "unknown error")}`);
+  }
+
+  const contentLength = Number(response.headers && response.headers.get && response.headers.get("content-length") || 0);
+  if (contentLength > maxBytes) {
+    throw new Error(`Telegram file is too large to download: ${contentLength} bytes, max ${maxBytes} bytes`);
+  }
+
+  const content = Buffer.from(await response.arrayBuffer());
+  if (content.length > maxBytes) {
+    throw new Error(`Telegram file is too large to download: ${content.length} bytes, max ${maxBytes} bytes`);
+  }
+
+  await fs.promises.mkdir(path.dirname(localPath), { recursive: true });
+  await fs.promises.writeFile(localPath, content);
+  return content.length;
+}
+
+function appendAllowedMessages(state, messages) {
+  const seen = new Set(state.inbox.map((message) => message.id));
+  for (const message of Array.isArray(messages) ? messages : []) {
+    if (!message || seen.has(message.id)) continue;
+    seen.add(message.id);
+    state.inbox.push(message);
   }
   if (state.inbox.length > inboxMaxMessages()) {
     state.inbox = state.inbox.slice(-inboxMaxMessages());
@@ -819,5 +970,10 @@ module.exports = {
   telegramApprovalRequest,
   startTelegramMonitor,
   telegramApi,
-  parseApprovalDecision
+  parseApprovalDecision,
+  _test: {
+    buildAllowedMessages,
+    formatIncomingMessageText,
+    incomingMediaFromMessage
+  }
 };

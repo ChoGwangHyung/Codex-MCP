@@ -82,6 +82,9 @@ TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
+# 선택 inbound media download 설정:
+# CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR=<ProjectRoot>/.codex/telegram-runtime/downloads
+# CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
 # Telegram에서 들어온 요청은 결과를 Telegram으로 다시 보내도록 지시합니다.
 # 한 방향 relay만 원하면 0으로 설정하세요.
 CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1
@@ -148,8 +151,10 @@ token 또는 allowlist가 바뀐 뒤에는 Codex를 restart/resume해서 MCP 서
 ## 자동 수신 Monitor
 
 설정이 완료되면 서버는 Telegram `getUpdates` monitor를 시작합니다. allowlist에
-등록된 텍스트 메시지를 capped runtime inbox에 저장하고, 공유 offset을
-전진시키며, allowlist 밖의 채팅은 무시합니다.
+등록된 텍스트 메시지를 capped runtime inbox에 저장하고, allowlist inbound
+사진/document를 runtime download directory에 저장하며, 공유 offset을
+전진시키고 allowlist 밖의 채팅은 무시합니다. 사진과 파일 inbox entry에는 Codex가
+확인할 수 있는 local file path가 포함됩니다.
 
 캡처된 메시지 읽기:
 
@@ -301,10 +306,10 @@ Console relay 세부 사항:
 - `CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1`은 과거 inbox 메시지와 pairing 메시지를 건너뜁니다.
 - Codex app-server 상태를 읽을 수 있으면 idle gate로 사용하고, 대상 thread가 busy이면 재시도합니다.
 
-relay prompt는 Telegram `chatId` 표시, 사용자 메시지 본문, 그리고 기본적으로
-짧은 `telegram_send` 회신 지시를 포함합니다. MCP가 Codex 최종 화면 출력을 직접
-읽는 것은 아니므로, Telegram에서 들어온 요청의 결과 회신은 이 injected reply
-contract를 통해 처리합니다.
+relay prompt는 Telegram `chatId` 표시, 사용자 메시지 본문, 다운로드된 attachment
+path가 있을 경우 해당 path, 그리고 기본적으로 짧은 `telegram_send` 회신 지시를
+포함합니다. MCP가 Codex 최종 화면 출력을 직접 읽는 것은 아니므로, Telegram에서
+들어온 요청의 결과 회신은 이 injected reply contract를 통해 처리합니다.
 
 relay 상태 확인:
 

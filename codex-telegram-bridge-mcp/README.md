@@ -81,6 +81,9 @@ TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
+# Optional inbound media download settings:
+# CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR=<ProjectRoot>/.codex/telegram-runtime/downloads
+# CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
 # Telegram-origin messages ask Codex to send the result back through Telegram.
 # Set to 0 to disable the injected reply contract.
 CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1
@@ -147,8 +150,10 @@ reloads the saved environment and access files.
 ## Automatic Receive Monitor
 
 When enabled and configured, the server starts a Telegram `getUpdates` monitor.
-It stores allowlisted text messages in a capped runtime inbox, advances a shared
-offset, and ignores non-allowlisted chats.
+It stores allowlisted text messages in a capped runtime inbox, downloads
+allowlisted inbound photos/documents into the runtime download directory, advances
+a shared offset, and ignores non-allowlisted chats. Photo and file inbox entries
+include the local file path so Codex can inspect the downloaded file.
 
 Read captured messages:
 
@@ -302,9 +307,10 @@ Console relay details:
 - If Codex app-server status is available, the relay uses it as an idle gate and retries while the target thread is busy.
 
 Relayed prompts contain the Telegram `chatId` marker, the user's message text,
-and, by default, a short `telegram_send` reply instruction. The MCP cannot read
-Codex's final screen output by itself; this injected reply contract is how
-Telegram-origin requests get their result back in Telegram.
+downloaded attachment paths when present, and, by default, a short
+`telegram_send` reply instruction. The MCP cannot read Codex's final screen
+output by itself; this injected reply contract is how Telegram-origin requests
+get their result back in Telegram.
 
 Check relay state:
 

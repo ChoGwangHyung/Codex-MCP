@@ -8,7 +8,8 @@ const {
   PROJECT_ACCESS_FILE,
   DEFAULT_MONITOR_POLL_TIMEOUT_SEC,
   DEFAULT_MONITOR_BACKOFF_MS,
-  DEFAULT_INBOX_MAX_MESSAGES
+  DEFAULT_INBOX_MAX_MESSAGES,
+  DEFAULT_DOWNLOAD_MAX_BYTES
 } = require("./constants.js");
 const { normalizeInteger, normalizePath } = require("./util.js");
 
@@ -22,6 +23,10 @@ function monitorBackoffMs() {
 
 function inboxMaxMessages() {
   return normalizeInteger(process.env.CODEX_TELEGRAM_INBOX_MAX_MESSAGES, DEFAULT_INBOX_MAX_MESSAGES, 20, 2000);
+}
+
+function downloadMaxBytes() {
+  return normalizeInteger(process.env.CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES, DEFAULT_DOWNLOAD_MAX_BYTES, 1, 2 * 1024 * 1024 * 1024);
 }
 
 function relayEnabled() {
@@ -203,12 +208,19 @@ function telegramStatePath() {
   return path.join(dir, "telegram-state.json");
 }
 
+function telegramDownloadDir() {
+  const configured = process.env.CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR;
+  if (configured) return configured;
+  return path.join(path.dirname(telegramStatePath()), "downloads");
+}
+
 loadEnvFiles();
 
 module.exports = {
   monitorPollTimeoutSec,
   monitorBackoffMs,
   inboxMaxMessages,
+  downloadMaxBytes,
   relayEnabled,
   relayMode,
   relayIgnoreExisting,
@@ -224,5 +236,6 @@ module.exports = {
   telegramConfigDir,
   telegramEnvPath,
   telegramAccessPath,
-  telegramStatePath
+  telegramStatePath,
+  telegramDownloadDir
 };
