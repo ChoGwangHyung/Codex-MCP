@@ -39,7 +39,25 @@ const lineBreakMessage = {
 };
 const lineBreakConsoleLine = _test.formatConsoleRelayPrompt(lineBreakMessage);
 assert.doesNotMatch(lineBreakConsoleLine, /[\r\n\u2028\u2029]/);
-assert.match(lineBreakConsoleLine, /line 1\\nline 2\\nline 3\\nline 4\\nline 5/);
+assert.doesNotMatch(lineBreakConsoleLine, /\\n/);
+assert.match(lineBreakConsoleLine, /line 1 \| line 2 \| line 3 \| line 4 \| line 5/);
+
+const mediaMessage = {
+  ...message,
+  text: [
+    "사진 확인해줘",
+    "",
+    "Attachment: photo",
+    "Local file: D:\\Projects\\TalkLog\\.codex\\telegram-runtime\\downloads\\10-20-photo-file_1.jpg",
+    "File name: 10-20-photo-file_1.jpg"
+  ].join("\n")
+};
+const mediaConsoleLine = _test.formatConsoleRelayPrompt(mediaMessage);
+assert.doesNotMatch(mediaConsoleLine, /[\r\n\u2028\u2029]/);
+assert.doesNotMatch(mediaConsoleLine, /\\n/);
+assert.match(mediaConsoleLine, /사진 확인해줘 \| Attachment: photo \| Local file:/);
+assert.match(mediaConsoleLine, /10-20-photo-file_1\.jpg/);
+assert.match(mediaConsoleLine, /telegram_send/);
 
 process.env.CODEX_TELEGRAM_CODEX_REPLY_REQUIRED = "0";
 assert.equal(_test.relayReplyRequired(), false);

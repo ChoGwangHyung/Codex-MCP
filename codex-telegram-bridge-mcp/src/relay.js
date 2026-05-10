@@ -32,8 +32,7 @@ const {
   normalizePath,
   parseBrokerCommandLine,
   parseJsonRows,
-  sanitize,
-  singleLine
+  sanitize
 } = require("./util.js");
 
 let relayStarted = false;
@@ -431,10 +430,20 @@ function formatRelayPrompt(message) {
 }
 
 function formatConsoleRelayPrompt(message) {
-  const text = singleLine(sanitize(message.text));
+  const text = flattenConsoleRelayText(message.text);
   const prompt = `[Telegram chatId ${message.chatId}] ${text}`.trim();
   const instruction = relayReplyInstructionLine(message);
   return instruction ? `${prompt} ${instruction}`.trim() : prompt;
+}
+
+function flattenConsoleRelayText(value) {
+  return sanitize(value)
+    .split(/\r\n|\r|\n|\u2028|\u2029/g)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join(" | ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function relayReplyInstructionLines(message) {
