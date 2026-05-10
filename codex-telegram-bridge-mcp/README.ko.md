@@ -292,8 +292,8 @@ CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 
 | Mode | 사용처 |
 | --- | --- |
-| `console` | Windows Codex TUI 세션. 대상 console에 text와 Enter를 주입합니다. |
-| `app-server` | Codex app-server stream. 해당 stream에 client가 연결된 경우에만 유용합니다. |
+| `console` | Windows Codex TUI 세션. 대상 console에 text와 Enter를 주입합니다. attachment는 local file path로 표시됩니다. |
+| `app-server` | Codex app-server stream. 해당 stream에 client가 연결된 경우에만 유용합니다. 다운로드된 이미지는 `localImage` 입력으로 함께 전달됩니다. |
 
 Console relay 세부 사항:
 
@@ -308,8 +308,12 @@ Console relay 세부 사항:
 
 relay prompt는 Telegram `chatId` 표시, 사용자 메시지 본문, 다운로드된 attachment
 path가 있을 경우 해당 path, 그리고 기본적으로 짧은 `telegram_send` 회신 지시를
-포함합니다. MCP가 Codex 최종 화면 출력을 직접 읽는 것은 아니므로, Telegram에서
-들어온 요청의 결과 회신은 이 injected reply contract를 통해 처리합니다.
+포함합니다. 긴 Telegram file ID와 추가 파일 metadata는 console 전송 안정성을
+위해 injected prompt에서는 제외하고, 전체 metadata는 inbox attachment 객체에
+남깁니다. `app-server` mode에서는 다운로드된 image attachment를 native
+`localImage` 입력으로도 함께 전달합니다. MCP가 Codex 최종 화면 출력을 직접
+읽는 것은 아니므로, Telegram에서 들어온 요청의 결과 회신은 이 injected reply
+contract를 통해 처리합니다.
 
 relay 상태 확인:
 

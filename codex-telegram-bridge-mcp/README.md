@@ -292,8 +292,8 @@ Supported relay modes:
 
 | Mode | Use Case |
 | --- | --- |
-| `console` | Windows Codex TUI sessions. Injects text and Enter into the target console. |
-| `app-server` | Codex app-server streams. Useful only when the client is connected to that stream. |
+| `console` | Windows Codex TUI sessions. Injects text and Enter into the target console. Attachments are represented by local file paths. |
+| `app-server` | Codex app-server streams. Useful only when the client is connected to that stream. Downloaded images are sent as `localImage` inputs. |
 
 Console relay details:
 
@@ -308,9 +308,13 @@ Console relay details:
 
 Relayed prompts contain the Telegram `chatId` marker, the user's message text,
 downloaded attachment paths when present, and, by default, a short
-`telegram_send` reply instruction. The MCP cannot read Codex's final screen
-output by itself; this injected reply contract is how Telegram-origin requests
-get their result back in Telegram.
+`telegram_send` reply instruction. Long Telegram file IDs and extra file
+metadata are kept out of the injected prompt so console submission stays
+reliable; the full metadata remains in the inbox attachment object. In
+`app-server` mode, downloaded image attachments are also included as native
+`localImage` inputs. The MCP cannot read Codex's final screen output by itself;
+this injected reply contract is how Telegram-origin requests get their result
+back in Telegram.
 
 Check relay state:
 

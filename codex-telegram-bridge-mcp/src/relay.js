@@ -337,7 +337,7 @@ async function findRelayTargetThread() {
 async function injectMessageIntoCodexAppServer(endpoint, threadId, message) {
   return appServerRequest(endpoint, "turn/start", {
     threadId,
-    input: [{ type: "text", text: formatRelayPrompt(message) }]
+    input: formatAppServerRelayInput(message)
   });
 }
 
@@ -434,6 +434,32 @@ function formatConsoleRelayPrompt(message) {
   const prompt = `[Telegram chatId ${message.chatId}] ${text}`.trim();
   const instruction = relayReplyInstructionLine(message);
   return instruction ? `${prompt} ${instruction}`.trim() : prompt;
+}
+
+function formatAppServerRelayInput(message) {
+  const input = [{ type: "text", text: formatRelayPrompt(message) }];
+  for (const attachment of imageAttachments(message)) {
+    input.push({ type: "localImage", path: attachment.localPath });
+  }
+  return input;
+}
+
+function imageAttachments(message) {
+  const seen = new Set();
+  const attachments = Array.isArray(message && message.attachments) ? message.attachments : [];
+  return attachments.filter((attachment) => {
+    const localPath = String(attachment && attachment.localPath || "").trim();
+    if (!localPath || seen.has(localPath) || !isImageAttachment(attachment)) return false;
+    seen.add(localPath);
+    return true;
+  });
+}
+
+function isImageAttachment(attachment) {
+  const type = String(attachment && attachment.type || "").toLowerCase();
+  const mimeType = String(attachment && attachment.mimeType || "").toLowerCase();
+  const localPath = String(attachment && attachment.localPath || "").toLowerCase();
+  return type === "photo" || mimeType.startsWith("image/") || /\.(avif|gif|jpe?g|png|webp)$/i.test(localPath);
 }
 
 function flattenConsoleRelayText(value) {
@@ -574,6 +600,7 @@ module.exports = {
   startTelegramRelay,
   scheduleRelayPendingMessages,
   telegramRelayStatus,
+  formatAppServerRelayInput,
   formatRelayPrompt,
   formatConsoleRelayPrompt,
   relayReplyInstructionLines,

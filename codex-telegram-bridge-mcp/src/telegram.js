@@ -549,10 +549,10 @@ function formatIncomingMessageText(text, attachment) {
     if (lines.length > 0) lines.push("");
     lines.push(`Attachment: ${attachment.type}`);
     if (attachment.localPath) lines.push(`Local file: ${attachment.localPath}`);
-    if (attachment.fileName) lines.push(`File name: ${attachment.fileName}`);
-    if (attachment.mimeType) lines.push(`MIME type: ${attachment.mimeType}`);
-    if (Number.isFinite(Number(attachment.fileSize))) lines.push(`Size: ${Number(attachment.fileSize)} bytes`);
-    if (attachment.fileId) lines.push(`Telegram file_id: ${attachment.fileId}`);
+    if (!attachment.localPath && attachment.fileName) lines.push(`File name: ${attachment.fileName}`);
+    if (!attachment.localPath && Number.isFinite(Number(attachment.fileSize))) {
+      lines.push(`Size: ${Number(attachment.fileSize)} bytes`);
+    }
     if (attachment.downloadError) lines.push(`Download error: ${attachment.downloadError}`);
   }
   return lines.join("\n").trim();

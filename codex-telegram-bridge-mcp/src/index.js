@@ -8,6 +8,7 @@ const {
   telegramEnabled
 } = require("./config.js");
 const {
+  formatAppServerRelayInput,
   formatConsoleRelayPrompt,
   formatRelayPrompt,
   isApprovalDecisionRelayMessage,
@@ -20,6 +21,7 @@ if (require.main === module) {
 
 module.exports = {
   _test: {
+    formatAppServerRelayInput,
     formatRelayPrompt,
     formatConsoleRelayPrompt,
     isApprovalDecisionRelayMessage,

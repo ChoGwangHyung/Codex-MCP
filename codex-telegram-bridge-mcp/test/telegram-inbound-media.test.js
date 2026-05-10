@@ -77,7 +77,10 @@ function telegramResponse(result) {
   assert.match(messages[0].text, /check this photo/);
   assert.match(messages[0].text, /Attachment: photo/);
   assert.match(messages[0].text, /Local file:/);
-  assert.match(messages[0].text, /File name: 10-20-photo-file_1\.jpg/);
+  assert.match(messages[0].text, /10-20-photo-file_1\.jpg/);
+  assert.doesNotMatch(messages[0].text, /Telegram file_id/);
+  assert.doesNotMatch(messages[0].text, /photo-large/);
+  assert.doesNotMatch(messages[0].text, /MIME type:/);
   assert.equal(messages[0].attachments.length, 1);
   assert.equal(messages[0].attachments[0].type, "photo");
   assert.equal(messages[0].attachments[0].fileId, "photo-large");

@@ -42,22 +42,33 @@ assert.doesNotMatch(lineBreakConsoleLine, /[\r\n\u2028\u2029]/);
 assert.doesNotMatch(lineBreakConsoleLine, /\\n/);
 assert.match(lineBreakConsoleLine, /line 1 \| line 2 \| line 3 \| line 4 \| line 5/);
 
+const mediaPath = "D:\\Projects\\TalkLog\\.codex\\telegram-runtime\\downloads\\10-20-photo-file_1.jpg";
 const mediaMessage = {
   ...message,
   text: [
     "사진 확인해줘",
     "",
     "Attachment: photo",
-    "Local file: D:\\Projects\\TalkLog\\.codex\\telegram-runtime\\downloads\\10-20-photo-file_1.jpg",
-    "File name: 10-20-photo-file_1.jpg"
-  ].join("\n")
+    `Local file: ${mediaPath}`
+  ].join("\n"),
+  attachments: [
+    { type: "photo", localPath: mediaPath, mimeType: "image/jpeg" },
+    { type: "document", localPath: mediaPath, mimeType: "image/jpeg" },
+    { type: "document", localPath: "D:\\Projects\\TalkLog\\.codex\\telegram-runtime\\downloads\\notes.txt", mimeType: "text/plain" }
+  ]
 };
 const mediaConsoleLine = _test.formatConsoleRelayPrompt(mediaMessage);
 assert.doesNotMatch(mediaConsoleLine, /[\r\n\u2028\u2029]/);
 assert.doesNotMatch(mediaConsoleLine, /\\n/);
 assert.match(mediaConsoleLine, /사진 확인해줘 \| Attachment: photo \| Local file:/);
 assert.match(mediaConsoleLine, /10-20-photo-file_1\.jpg/);
+assert.doesNotMatch(mediaConsoleLine, /Telegram file_id/);
 assert.match(mediaConsoleLine, /telegram_send/);
+
+const mediaAppServerInput = _test.formatAppServerRelayInput(mediaMessage);
+assert.equal(mediaAppServerInput.length, 2);
+assert.equal(mediaAppServerInput[0].type, "text");
+assert.deepEqual(mediaAppServerInput[1], { type: "localImage", path: mediaPath });
 
 process.env.CODEX_TELEGRAM_CODEX_REPLY_REQUIRED = "0";
 assert.equal(_test.relayReplyRequired(), false);
