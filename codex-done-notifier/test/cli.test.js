@@ -30,8 +30,13 @@ assert.match(installed, /\[features]/);
 assert.match(installed, /hooks = true/);
 assert.match(installed, /\[\[hooks\.Stop]]/);
 assert.match(installed, /node notifier\.js hook/);
+assert.match(installed, /--enabled --sound exclamation/);
+assert.match(installed, /codex-done-notifier-config/);
 assert.doesNotMatch(installed, /codex_hooks/);
 assert.equal(_test.doneHookStatus().installed, true);
+assert.equal(_test.currentNotifierConfig().configured, true);
+assert.equal(_test.currentNotifierConfig().enabled, true);
+assert.equal(_test.currentNotifierConfig().sound, "exclamation");
 
 const second = _test.ensureHookInstalled();
 assert.equal(second.changed, false);
@@ -66,45 +71,58 @@ const project = path.join(tempDir, "project");
 const nested = path.join(project, "src");
 fs.mkdirSync(path.join(project, ".codex"), { recursive: true });
 fs.mkdirSync(nested, { recursive: true });
-const marker = _test.markerPath(project);
-fs.writeFileSync(marker, JSON.stringify({ enabled: true, sessions: ["session-1"] }));
-assert.equal(_test.findMarker(nested), marker);
 assert.equal(_test.codexConfigPath({ cwd: project }), configFile);
 const configuredConfigFile = process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE;
 delete process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE;
 assert.equal(_test.codexConfigPath({ cwd: project }), path.join(project, ".codex", "config.toml"));
 assert.equal(_test.codexConfigPath({ cwd: project, global: true }), path.join(os.homedir(), ".codex", "config.toml"));
 process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE = configuredConfigFile;
-assert.equal(_test.shouldNotify({ marker, sessionId: "session-1" }), true);
-assert.equal(_test.shouldNotify({ marker, sessionId: "session-2" }), false);
+assert.equal(
+  _test.shouldNotify({
+    sessionId: "session-1",
+    hookConfig: _test.hookConfigFromArgs(["--enabled", "--sound", "exclamation", "--session", "session-1"])
+  }),
+  true
+);
+assert.equal(
+  _test.shouldNotify({
+    sessionId: "session-2",
+    hookConfig: _test.hookConfigFromArgs(["--enabled", "--sound", "exclamation", "--session", "session-1"])
+  }),
+  false
+);
 assert.equal(_test.normalizeSoundName("ding"), "ding");
 assert.equal(_test.normalizeSoundName("exclamation"), "exclamation");
 assert.equal(_test.normalizeSoundName("unknown"), "exclamation");
 assert.equal(_test.markerSoundEnabled({ sound: "none" }), false);
 assert.equal(_test.markerNotificationEnabled({ notificationEnabled: false }), false);
 assert.equal(_test.markerHasOutput({ soundEnabled: false, notificationEnabled: false }), false);
-fs.writeFileSync(marker, JSON.stringify({ enabled: true, soundEnabled: false, notificationEnabled: false }));
-assert.equal(_test.shouldNotify({ marker, sessionId: "session-1" }), false);
-fs.writeFileSync(marker, JSON.stringify({ enabled: true, sessions: ["session-1"] }));
+assert.equal(
+  _test.shouldNotify({
+    sessionId: "session-1",
+    hookConfig: _test.hookConfigFromArgs(["--enabled", "--no-sound", "--no-notification"])
+  }),
+  false
+);
 assert.equal(_test.notificationSound({ sound: "hand" }), "hand");
 assert.equal(_test.notificationSound({ soundEnabled: false, sound: "hand" }), "none");
 assert.equal(
-  _test.notificationSoundFile({ soundFile: ".codex/done.wav" }, marker),
-  path.join(project, ".codex", "done.wav")
+  _test.notificationSoundFile({ soundFile: ".codex/done.wav" }),
+  path.resolve(".codex", "done.wav")
 );
 assert.equal(
-  _test.notificationSoundFile({ soundFile: path.join(project, "done.wav") }, marker),
+  _test.notificationSoundFile({ soundFile: path.join(project, "done.wav") }),
   path.join(project, "done.wav")
 );
 assert.match(_test.windowsDefaultSoundFile("ding"), /ding\.wav$/i);
 
 process.env.CODEX_DONE_NOTIFIER_ENABLED = "1";
-assert.equal(_test.shouldNotify({ marker: "", sessionId: "" }), true);
+assert.equal(_test.shouldNotify({ sessionId: "" }), true);
 delete process.env.CODEX_DONE_NOTIFIER_ENABLED;
 
 process.env.CODEX_DONE_NOTIFIER_SESSION_IDS = "a,b c";
-assert.equal(_test.shouldNotify({ marker: "", sessionId: "b" }), true);
-assert.equal(_test.shouldNotify({ marker: "", sessionId: "d" }), false);
+assert.equal(_test.shouldNotify({ sessionId: "b" }), true);
+assert.equal(_test.shouldNotify({ sessionId: "d" }), false);
 delete process.env.CODEX_DONE_NOTIFIER_SESSION_IDS;
 
 assert.equal(
@@ -119,7 +137,7 @@ _test.handleHookInput({
   cwd: project,
   session_id: "session-1",
   last_assistant_message: "Finished"
-}).then((result) => {
+}, _test.hookConfigFromArgs(["--enabled", "--sound", "exclamation", "--session", "session-1"])).then((result) => {
   assert.equal(result.notified, true);
 }).catch((error) => {
   console.error(error);

@@ -8,7 +8,7 @@ const { spawn, spawnSync } = require("node:child_process");
 
 const HOOK_BEGIN = "# BEGIN codex-done-notifier hook";
 const HOOK_END = "# END codex-done-notifier hook";
-const MARKER_FILE = "notify-on-stop";
+const HOOK_CONFIG_PREFIX = "# codex-done-notifier-config ";
 
 async function main(argv = process.argv) {
   const command = String(argv[2] || "help").toLowerCase();
@@ -16,9 +16,9 @@ async function main(argv = process.argv) {
     if (command === "configure") return configure(argv.slice(3));
     if (command === "unconfigure") return unconfigure(argv.slice(3));
     if (command === "enable") return enable(argv.slice(3));
-    if (command === "disable") return disable();
+    if (command === "disable") return disable(argv.slice(3));
     if (command === "status") return status(argv.slice(3));
-    if (command === "hook") return hook();
+    if (command === "hook") return hook(argv.slice(3));
     if (command === "test") return testNotification();
     if (command === "hook-snippet") return printHookSnippet();
     usage(command === "help" ? 0 : 1);
@@ -29,9 +29,16 @@ async function main(argv = process.argv) {
 }
 
 function configure(args = []) {
-  const result = ensureHookInstalled({ global: hasFlag(args, "--global"), cwd: process.cwd() });
-  console.log(`${result.changed ? "installed" : "already installed"}: ${result.path}`);
-  if (!hasFlag(args, "--no-enable")) enable(args);
+  if (hasFlag(args, "--no-enable")) {
+    const result = ensureHookInstalled({
+      global: hasFlag(args, "--global"),
+      cwd: process.cwd(),
+      hookConfig: disabledHookConfig()
+    });
+    console.log(`${result.changed ? "installed" : "already installed"}: ${result.path}`);
+    return;
+  }
+  enable(args);
 }
 
 function unconfigure(args = []) {
@@ -44,80 +51,70 @@ function unconfigure(args = []) {
 
 function enable(args = []) {
   const cwd = process.cwd();
-  const marker = markerPath(cwd);
-  const existingConfig = fs.existsSync(marker) ? readMarkerConfig(marker) : {};
+  const global = hasFlag(args, "--global");
+  const existingConfig = currentNotifierConfig({ global, cwd });
+  const baseConfig = existingConfig.configured ? existingConfig : {};
   const sessionId = optionValue(args, "--session");
   const sound = optionValue(args, "--sound");
   const soundFile = optionValue(args, "--sound-file");
   const hasSoundSetting = hasSoundOverride(args);
   const hasNotificationSetting = hasNotificationOverride(args);
   const hasOutputOverride = hasSoundSetting || hasNotificationSetting;
-  const restorePreviousOutputs = !hasOutputOverride && existingConfig.enabled === false && markerHasOutput(existingConfig);
+  const restorePreviousOutputs = !hasOutputOverride && baseConfig.enabled === false && markerHasOutput(baseConfig);
   const soundEnabled = restorePreviousOutputs
-    ? markerSoundEnabled(existingConfig)
-    : hasOutputOverride ? hasSoundSetting ? requestedSoundEnabled(args, sound) : markerSoundEnabled(existingConfig) : true;
+    ? markerSoundEnabled(baseConfig)
+    : hasOutputOverride ? hasSoundSetting ? requestedSoundEnabled(args, sound) : markerSoundEnabled(baseConfig) : true;
   const desktopNotificationEnabled = restorePreviousOutputs
-    ? markerNotificationEnabled(existingConfig)
-    : hasOutputOverride ? hasNotificationSetting ? requestedNotificationEnabled(args) : markerNotificationEnabled(existingConfig) : true;
-  const selectedSound = sound || existingConfig.sound || defaultSoundName();
+    ? markerNotificationEnabled(baseConfig)
+    : hasOutputOverride ? hasNotificationSetting ? requestedNotificationEnabled(args) : markerNotificationEnabled(baseConfig) : true;
+  const selectedSound = sound || baseConfig.sound || defaultSoundName();
   const selectedSoundFile = soundFile
     ? path.resolve(cwd, soundFile)
-    : typeof existingConfig.soundFile === "string" ? existingConfig.soundFile : "";
-  if (!soundEnabled && !desktopNotificationEnabled) {
-    writeMarkerConfig(marker, {
-      enabled: false,
-      sessions: sessionId ? [sessionId] : markerSessions(existingConfig),
-      sound: selectedSound,
-      soundFile: selectedSoundFile,
-      soundEnabled: false,
-      notificationEnabled: false,
-      updatedAt: new Date().toISOString()
-    });
-    console.log(`disabled: ${marker}`);
-    console.log("reason: no outputs enabled");
-    return;
-  }
-  writeMarkerConfig(marker, {
-    enabled: true,
+    : typeof baseConfig.soundFile === "string" ? baseConfig.soundFile : "";
+  const config = {
+    enabled: soundEnabled || desktopNotificationEnabled,
     sessions: sessionId ? [sessionId] : [],
     sound: selectedSound,
     soundFile: selectedSoundFile,
     soundEnabled,
-    notificationEnabled: desktopNotificationEnabled,
-    createdAt: new Date().toISOString()
-  });
-  console.log(`enabled: ${marker}`);
+    notificationEnabled: desktopNotificationEnabled
+  };
+  const result = ensureHookInstalled({ global, cwd, hookConfig: config });
+  console.log(`${config.enabled ? "enabled" : "disabled"}: ${result.path}`);
+  if (!config.enabled) console.log("reason: no outputs enabled");
   if (sessionId) console.log(`session: ${sessionId}`);
   console.log(`sound: ${soundEnabled ? selectedSound : "off"}`);
   console.log(`notification: ${desktopNotificationEnabled ? "on" : "off"}`);
   if (soundEnabled && selectedSoundFile) console.log(`sound_file: ${selectedSoundFile}`);
 }
 
-function disable() {
-  const marker = markerPath(process.cwd());
-  if (fs.existsSync(marker)) {
-    const config = readMarkerConfig(marker);
-    writeMarkerConfig(marker, {
+function disable(args = []) {
+  const cwd = process.cwd();
+  const global = hasFlag(args, "--global");
+  const existingConfig = currentNotifierConfig({ global, cwd });
+  const baseConfig = existingConfig.configured ? existingConfig : {};
+  const result = ensureHookInstalled({
+    global,
+    cwd,
+    hookConfig: {
       enabled: false,
-      sessions: markerSessions(config),
-      sound: config.sound || defaultSoundName(),
-      soundFile: typeof config.soundFile === "string" ? config.soundFile : "",
-      soundEnabled: markerSoundEnabled(config),
-      notificationEnabled: markerNotificationEnabled(config),
-      updatedAt: new Date().toISOString()
-    });
-  }
-  console.log(`disabled: ${marker}`);
+      sessions: markerSessions(baseConfig),
+      sound: baseConfig.sound || defaultSoundName(),
+      soundFile: typeof baseConfig.soundFile === "string" ? baseConfig.soundFile : "",
+      soundEnabled: markerSoundEnabled(baseConfig),
+      notificationEnabled: markerNotificationEnabled(baseConfig)
+    }
+  });
+  console.log(`disabled: ${result.path}`);
 }
 
 function status(args = []) {
   const cwd = process.cwd();
-  const marker = findMarker(cwd);
-  const markerConfig = marker ? readMarkerConfig(marker) : {};
-  const markerActive = marker && markerConfig.enabled !== false && markerHasOutput(markerConfig);
   const localHookStatus = doneHookStatus({ global: false, cwd });
   const globalHookStatus = doneHookStatus({ global: true, cwd });
   const selectedHookStatus = hasFlag(args, "--global") ? globalHookStatus : localHookStatus;
+  const config = selectedHookStatus.configured ? selectedHookStatus : {};
+  const enabled = selectedHookStatus.installed && config.enabled !== false && markerHasOutput(config);
   console.log(`hook_installed: ${selectedHookStatus.installed ? "yes" : "no"}`);
   console.log(`hook_config: ${selectedHookStatus.path}`);
   console.log(`hook_reviewed: ${selectedHookStatus.reviewed ? "yes" : "no"}`);
@@ -129,31 +126,31 @@ function status(args = []) {
   console.log(`global_hook_config: ${globalHookStatus.path}`);
   console.log(`global_hook_reviewed: ${globalHookStatus.reviewed ? "yes" : "no"}`);
   console.log(`cwd: ${cwd}`);
-  console.log(`enabled_here: ${markerActive ? "yes" : "no"}`);
-  if (marker) {
-    console.log(`marker: ${marker}`);
-    console.log(`marker_enabled: ${markerConfig.enabled === false ? "no" : "yes"}`);
-    console.log(`sound: ${markerSoundEnabled(markerConfig) ? markerConfig.sound || defaultSoundName() : "off"}`);
-    console.log(`notification: ${markerNotificationEnabled(markerConfig) ? "on" : "off"}`);
-    if (markerSoundEnabled(markerConfig) && markerConfig.soundFile) console.log(`sound_file: ${markerConfig.soundFile}`);
+  console.log(`enabled_here: ${enabled ? "yes" : "no"}`);
+  if (selectedHookStatus.installed) {
+    console.log(`config_enabled: ${config.enabled === false ? "no" : "yes"}`);
+    console.log(`sound: ${markerSoundEnabled(config) ? config.sound || defaultSoundName() : "off"}`);
+    console.log(`notification: ${markerNotificationEnabled(config) ? "on" : "off"}`);
+    if (markerSoundEnabled(config) && config.soundFile) console.log(`sound_file: ${config.soundFile}`);
   }
   console.log(`session_env_enabled: ${process.env.CODEX_DONE_NOTIFIER_ENABLED === "1" ? "yes" : "no"}`);
 }
 
-async function hook() {
+async function hook(args = []) {
   const input = parseJson(await readStdin());
-  await handleHookInput(input);
+  await handleHookInput(input, hookConfigFromArgs(args));
   process.stdout.write(`${JSON.stringify({ continue: true })}\n`);
 }
 
 async function testNotification() {
-  const marker = findMarker(process.cwd());
-  const markerConfig = marker ? readMarkerConfig(marker) : {};
+  const localConfig = currentNotifierConfig({ global: false, cwd: process.cwd() });
+  const globalConfig = currentNotifierConfig({ global: true, cwd: process.cwd() });
+  const markerConfig = localConfig.configured ? localConfig : globalConfig.configured ? globalConfig : defaultHookConfig();
   await sendNotification({
     title: process.env.CODEX_DONE_NOTIFIER_TITLE || "Codex task completed",
     body: "codex-done-notifier test notification",
     sound: notificationSound(markerConfig),
-    soundFile: notificationSoundFile(markerConfig, marker),
+    soundFile: notificationSoundFile(markerConfig),
     soundEnabled: markerSoundEnabled(markerConfig),
     notificationEnabled: markerNotificationEnabled(markerConfig)
   });
@@ -161,40 +158,39 @@ async function testNotification() {
 }
 
 function printHookSnippet() {
-  process.stdout.write(`${ensureCodexHooksFeature("")}${appendManagedHookBlock("", hookCommand()).trimEnd()}\n`);
+  process.stdout.write(`${ensureCodexHooksFeature("")}${appendManagedHookBlock("", defaultHookConfig()).trimEnd()}\n`);
 }
 
-async function handleHookInput(input) {
+async function handleHookInput(input, hookConfig = {}) {
   const cwd = String(input && input.cwd || process.cwd());
   const sessionId = String(input && (input.session_id || input.sessionId) || "");
-  const marker = findMarker(cwd);
-  if (!shouldNotify({ marker, sessionId })) {
+  if (!shouldNotify({ sessionId, hookConfig })) {
     return { notified: false, reason: "not enabled" };
   }
 
-  const markerConfig = marker ? readMarkerConfig(marker) : {};
+  const markerConfig = hookConfig.configured ? hookConfig : defaultHookConfig();
   await sendNotification({
     title: process.env.CODEX_DONE_NOTIFIER_TITLE || "Codex task completed",
     body: notificationBody(input, cwd),
     sound: notificationSound(markerConfig),
-    soundFile: notificationSoundFile(markerConfig, marker),
+    soundFile: notificationSoundFile(markerConfig),
     soundEnabled: markerSoundEnabled(markerConfig),
     notificationEnabled: markerNotificationEnabled(markerConfig)
   });
-  return { notified: true, marker };
+  return { notified: true, config: markerConfig };
 }
 
-function shouldNotify({ marker, sessionId }) {
+function shouldNotify({ sessionId, hookConfig = {} }) {
   if (process.env.CODEX_DONE_NOTIFIER_ENABLED === "1") return true;
   if (sessionId && sessionList(process.env.CODEX_DONE_NOTIFIER_SESSION_IDS).includes(sessionId)) return true;
-  if (!marker) return false;
-  const config = readMarkerConfig(marker);
-  if (config.enabled === false) return false;
-  if (!markerHasOutput(config)) return false;
-  if (Array.isArray(config.sessions) && config.sessions.length > 0) {
-    return sessionId ? config.sessions.map(String).includes(sessionId) : false;
+  if (hookConfig.configured) {
+    if (hookConfig.enabled === false) return false;
+    if (!markerHasOutput(hookConfig)) return false;
+    const sessions = markerSessions(hookConfig);
+    if (sessions.length > 0) return sessionId ? sessions.includes(sessionId) : false;
+    return true;
   }
-  return true;
+  return false;
 }
 
 function notificationBody(input, cwd) {
@@ -386,12 +382,46 @@ function macSoundName(sound) {
   return map[normalizeSoundName(sound)] || map.ding;
 }
 
+function defaultHookConfig() {
+  return {
+    configured: true,
+    enabled: true,
+    sessions: [],
+    sound: defaultSoundName(),
+    soundFile: "",
+    soundEnabled: true,
+    notificationEnabled: true
+  };
+}
+
+function disabledHookConfig() {
+  return {
+    ...defaultHookConfig(),
+    enabled: false
+  };
+}
+
+function normalizeHookConfig(config = {}) {
+  const sound = normalizeSoundName(config.sound || defaultSoundName());
+  const soundEnabled = config.soundEnabled !== false && sound !== "none";
+  const notificationEnabled = config.notificationEnabled !== false;
+  return {
+    configured: true,
+    enabled: config.enabled !== false && (soundEnabled || notificationEnabled),
+    sessions: markerSessions(config),
+    sound,
+    soundFile: String(config.soundFile || "").trim(),
+    soundEnabled,
+    notificationEnabled
+  };
+}
+
 function ensureHookInstalled(options = {}) {
   const file = codexConfigPath(options);
   const before = readText(file);
   const withoutBlock = removeManagedHookBlock(before);
   const withFeature = ensureCodexHooksFeature(withoutBlock);
-  const after = appendManagedHookBlock(withFeature, hookCommand());
+  const after = appendManagedHookBlock(withFeature, options.hookConfig || defaultHookConfig());
   if (after !== before) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, after);
@@ -404,7 +434,9 @@ function doneHookStatus(options = {}) {
   const file = codexConfigPath(options);
   const text = readText(file);
   const review = hookReviewStatus(file);
+  const config = currentNotifierConfig(options);
   return {
+    ...config,
     installed: text.includes(HOOK_BEGIN) && text.includes(HOOK_END),
     path: file,
     reviewed: review.reviewed,
@@ -445,9 +477,32 @@ function globalCodexConfigPath() {
   return path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "config.toml");
 }
 
-function hookCommand() {
+function baseHookCommand() {
   if (process.env.CODEX_DONE_NOTIFIER_HOOK_COMMAND) return process.env.CODEX_DONE_NOTIFIER_HOOK_COMMAND;
   return `node ${quoteCommandArg(__filename)} hook`;
+}
+
+function buildHookCommand(config) {
+  const normalized = normalizeHookConfig(config);
+  const args = [];
+  args.push(normalized.enabled ? "--enabled" : "--disabled");
+  args.push("--sound", normalized.sound);
+  if (normalized.soundFile) args.push("--sound-file", normalized.soundFile);
+  if (!normalized.soundEnabled) args.push("--no-sound");
+  if (!normalized.notificationEnabled) args.push("--no-notification");
+  if (normalized.sessions.length > 0) args.push("--session", normalized.sessions.join(","));
+  return [baseHookCommand(), ...args.map(quoteCommandArg)].join(" ");
+}
+
+function currentNotifierConfig(options = {}) {
+  const file = codexConfigPath(options);
+  const block = managedHookBlock(readText(file));
+  if (!block) return { configured: false };
+  const commentConfig = extractManagedHookConfig(block);
+  if (commentConfig.configured) return commentConfig;
+  const command = extractManagedHookCommand(block);
+  if (!command) return { configured: false };
+  return hookConfigFromArgs(commandArgs(command));
 }
 
 function removeManagedHookBlock(text) {
@@ -505,52 +560,57 @@ function ensureCodexHooksFeature(text) {
   return lines.join("\n").trimEnd();
 }
 
-function appendManagedHookBlock(text, command) {
+function appendManagedHookBlock(text, hookConfig) {
+  const normalized = normalizeHookConfig(hookConfig);
   return appendSection(text, [
     HOOK_BEGIN,
+    `${HOOK_CONFIG_PREFIX}${JSON.stringify({
+      enabled: normalized.enabled,
+      sessions: normalized.sessions,
+      sound: normalized.sound,
+      soundFile: normalized.soundFile,
+      soundEnabled: normalized.soundEnabled,
+      notificationEnabled: normalized.notificationEnabled
+    })}`,
     "[[hooks.Stop]]",
     'matcher = "*"',
     "",
     "[[hooks.Stop.hooks]]",
     'type = "command"',
-    `command = ${JSON.stringify(command)}`,
+    `command = ${JSON.stringify(buildHookCommand(normalized))}`,
     "timeout = 5",
     'statusMessage = "Sending completion notification"',
     HOOK_END
   ].join("\n"));
 }
 
+function managedHookBlock(text) {
+  const match = String(text || "").match(new RegExp(`${escapeRegex(HOOK_BEGIN)}[\\s\\S]*?${escapeRegex(HOOK_END)}`));
+  return match ? match[0] : "";
+}
+
+function extractManagedHookConfig(block) {
+  const prefix = escapeRegex(HOOK_CONFIG_PREFIX);
+  const match = String(block || "").match(new RegExp(`^${prefix}(.+)$`, "m"));
+  if (!match) return { configured: false };
+  const parsed = parseJson(match[1]);
+  return parsed && typeof parsed === "object" ? normalizeHookConfig(parsed) : { configured: false };
+}
+
+function extractManagedHookCommand(block) {
+  const match = String(block || "").match(/^\s*command\s*=\s*("(?:\\.|[^"\\])*")\s*$/m);
+  if (!match) return "";
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return "";
+  }
+}
+
 function appendSection(text, section) {
   const content = String(text || "").trimEnd();
   if (!content) return `${section}\n`;
   return `${content}\n\n${section}\n`;
-}
-
-function markerPath(cwd) {
-  return path.join(cwd, ".codex", MARKER_FILE);
-}
-
-function findMarker(cwd) {
-  let current = path.resolve(cwd || process.cwd());
-  while (true) {
-    const marker = markerPath(current);
-    if (fs.existsSync(marker)) return marker;
-    const parent = path.dirname(current);
-    if (parent === current) return "";
-    current = parent;
-  }
-}
-
-function readMarkerConfig(marker) {
-  const raw = readText(marker).trim();
-  if (!raw) return { enabled: true };
-  const parsed = parseJson(raw);
-  return parsed && typeof parsed === "object" ? parsed : { enabled: true };
-}
-
-function writeMarkerConfig(marker, config) {
-  fs.mkdirSync(path.dirname(marker), { recursive: true });
-  fs.writeFileSync(marker, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 function markerSessions(config) {
@@ -580,8 +640,7 @@ function notificationSoundFile(config, marker = "") {
   const value = String(config && config.soundFile || "").trim();
   if (!value) return "";
   if (path.isAbsolute(value)) return value;
-  const projectDir = marker ? path.dirname(path.dirname(marker)) : process.cwd();
-  return path.resolve(projectDir, value);
+  return path.resolve(process.cwd(), value);
 }
 
 function defaultSoundName() {
@@ -623,6 +682,65 @@ function requestedSoundEnabled(args, sound) {
 
 function requestedNotificationEnabled(args) {
   return !hasAnyFlag(args, ["--no-notification", "--notification-off", "--sound-only"]);
+}
+
+function hookConfigFromArgs(args = []) {
+  const list = Array.isArray(args) ? args : [];
+  const sound = normalizeSoundName(optionValue(list, "--sound") || defaultSoundName());
+  const soundEnabled = !hasAnyFlag(list, ["--no-sound", "--sound-off", "--notification-only"]) && sound !== "none";
+  const notificationEnabled = !hasAnyFlag(list, ["--no-notification", "--notification-off", "--sound-only"]);
+  return normalizeHookConfig({
+    configured: true,
+    enabled: !hasFlag(list, "--disabled"),
+    sessions: sessionList(optionValue(list, "--session")),
+    sound,
+    soundFile: optionValue(list, "--sound-file"),
+    soundEnabled,
+    notificationEnabled
+  });
+}
+
+function commandArgs(command) {
+  const tokens = splitCommandLine(command);
+  const hookIndex = tokens.lastIndexOf("hook");
+  return hookIndex >= 0 ? tokens.slice(hookIndex + 1) : tokens;
+}
+
+function splitCommandLine(command) {
+  const tokens = [];
+  let current = "";
+  let quote = "";
+  let escaping = false;
+  for (const char of String(command || "")) {
+    if (escaping) {
+      current += char;
+      escaping = false;
+      continue;
+    }
+    if (quote && char === "\\") {
+      escaping = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = "";
+      else current += char;
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        tokens.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current) tokens.push(current);
+  return tokens;
 }
 
 function readText(file) {
@@ -740,7 +858,7 @@ function usage(exitCode) {
     "  configure --global",
     "                  Install the user-level Codex Stop hook and enable this project",
     "  configure --no-enable",
-    "                  Install the hook without creating the project marker",
+    "                  Install the hook in disabled state",
     "  unconfigure     Remove the local managed Stop hook block",
     "  unconfigure --global",
     "                  Remove the user-level managed Stop hook block",
@@ -774,16 +892,16 @@ module.exports = {
     doneHookStatus,
     ensureCodexHooksFeature,
     ensureHookInstalled,
-    findMarker,
+    hookConfigFromArgs,
     handleHookInput,
-    markerPath,
     notificationBody,
     notificationSound,
     notificationSoundFile,
     normalizeSoundName,
-    readMarkerConfig,
     removeManagedHookBlock,
     windowsDefaultSoundFile,
+    buildHookCommand,
+    currentNotifierConfig,
     hookReviewStatus,
     hookStateNeedles,
     codexConfigPath,

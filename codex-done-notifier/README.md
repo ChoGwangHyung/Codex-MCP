@@ -17,8 +17,7 @@ codex-done-notifier configure
 ```
 
 By default, `configure` updates only the current project's `.codex/config.toml`
-and also enables notifications for that project by creating
-`.codex/notify-on-stop`.
+and stores the notifier settings in the managed `Stop` hook command.
 
 Use a user-level hook only when you want one hook available across projects:
 
@@ -50,10 +49,10 @@ cd <project-dir>
 codex-done-notifier enable
 ```
 
-This creates:
+This updates:
 
 ```text
-.codex/notify-on-stop
+.codex/config.toml
 ```
 
 Set a project-specific sound preset:
@@ -125,7 +124,7 @@ codex resume
 | --- | --- |
 | `configure` | Install the local project Codex `Stop` hook and enable notifications. |
 | `configure --global` | Install the user-level Codex `Stop` hook and enable the current project. |
-| `configure --no-enable` | Install the hook without creating the project marker. |
+| `configure --no-enable` | Install the hook in disabled state. |
 | `unconfigure` | Remove the local managed hook block. |
 | `unconfigure --global` | Remove the user-level managed hook block. |
 | `enable` | Enable notifications for the current project. |
@@ -145,8 +144,7 @@ The hook reads the Codex hook JSON from stdin and checks:
 
 - `CODEX_DONE_NOTIFIER_ENABLED=1`
 - `CODEX_DONE_NOTIFIER_SESSION_IDS`
-- or a `.codex/notify-on-stop` marker in the current directory or a parent
-  directory
+- or the managed hook options stored in `.codex/config.toml`
 
 If none match, it exits quietly.
 
