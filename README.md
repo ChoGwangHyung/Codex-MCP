@@ -19,11 +19,17 @@ Korean documentation: [README.ko.md](README.ko.md)
 ```powershell
 npm install -g @chogwanghyung/codex-ai-bridge-mcp
 npm install -g @chogwanghyung/codex-telegram-bridge-mcp
+npm install -g @chogwanghyung/codex-done-notifier
 ```
 
-`codex-done-notifier` is currently included for local testing from this
-repository. It can be installed from this checkout or published later as a
-separate package.
+To install all three packages at once:
+
+```powershell
+npm install -g @chogwanghyung/codex-ai-bridge-mcp @chogwanghyung/codex-telegram-bridge-mcp @chogwanghyung/codex-done-notifier
+```
+
+The packages are still versioned and configured independently, so projects can
+enable only the tools or hooks they need.
 
 ## Layout
 

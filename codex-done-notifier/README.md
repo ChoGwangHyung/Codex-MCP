@@ -51,6 +51,40 @@ This creates:
 .codex/notify-on-stop
 ```
 
+Set a project-specific sound preset:
+
+```powershell
+node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --sound exclamation
+```
+
+Supported presets are `ding`, `asterisk`, `beep`, `exclamation`, `hand`,
+`question`, and `none`. The default sound is `exclamation`.
+
+Set a project-specific sound file:
+
+```powershell
+node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --sound-file .codex\done.wav
+```
+
+On Windows, custom sound files use `System.Media.SoundPlayer`, so `.wav` is the
+portable choice. On macOS, custom sound files are played with `afplay`.
+
+Turn off only the sound while keeping desktop notifications:
+
+```powershell
+node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --no-sound
+```
+
+Turn off only the desktop notification while keeping sound:
+
+```powershell
+node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --no-notification
+```
+
+If both outputs are turned off, the project behaves as disabled. A later plain
+`enable` turns both outputs back on. If only one output was off before a full
+`disable`, a later plain `enable` restores that one-output-off preference.
+
 Disable it:
 
 ```powershell
@@ -91,6 +125,10 @@ codex resume
 | `unconfigure --global` | Remove the user-level managed hook block. |
 | `enable` | Enable notifications for the current project. |
 | `enable --session <id>` | Enable notifications for one Codex session id. |
+| `enable --sound <preset>` | Set the current project's sound preset. |
+| `enable --sound-file <path>` | Set the current project's sound file. |
+| `enable --no-sound` or `enable --notification-only` | Turn off sound only. |
+| `enable --no-notification` or `enable --sound-only` | Turn off desktop notifications only. |
 | `disable` | Disable notifications for the current project. |
 | `status` | Show hook and current project status. |
 | `test` | Send a test notification. |
@@ -107,12 +145,39 @@ The hook reads the Codex hook JSON from stdin and checks:
 
 If none match, it exits quietly.
 
+## Troubleshooting
+
+Check the current project first:
+
+```powershell
+node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js status
+node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js test
+```
+
+`status` should show `hook_installed: yes`, `hook_reviewed: yes`, and
+`enabled_here: yes`. If the hook was installed or trusted after the Codex
+session was already open, exit that session and resume it once so Codex reloads
+the hook config.
+
+If `test` prints `sent` but nothing appears, the hook is runnable and the issue
+is usually the desktop notification environment: Windows Focus Assist, disabled
+PowerShell/terminal notifications, or a silent system sound scheme. On Windows,
+the notifier uses BurntToast when that module is available, otherwise it falls
+back to a tray balloon. Sound presets use `[Console]::Beep` with a system sound
+fallback, and a custom `.wav` can be set with `enable --sound-file`.
+The default Windows `exclamation` preset first tries
+`C:\Windows\Media\Windows Exclamation.wav`.
+
 ## Requirements
 
 - Node.js 20 or newer.
 - Codex hooks enabled.
-- Windows is the primary supported notification target. macOS uses
-  `osascript`; Linux attempts `notify-send` when available.
+- Windows: Windows Runtime toast notification, BurntToast when available, then
+  tray balloon fallback, plus built-in `.wav`, `[Console]::Beep`, or a custom
+  `.wav` file.
+- macOS: `osascript` notification plus a system sound or `afplay` file.
+- Linux: `notify-send` notification when available. Sound playback is not
+  enabled by default.
 
 ## License
 

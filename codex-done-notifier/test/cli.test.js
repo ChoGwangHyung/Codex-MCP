@@ -36,6 +36,9 @@ assert.equal(_test.doneHookStatus().installed, true);
 const second = _test.ensureHookInstalled();
 assert.equal(second.changed, false);
 
+fs.appendFileSync(configFile, `\n[hooks.state.'${configFile}:stop:0:0']\ntrusted_hash = "sha256:abc"\n`);
+assert.equal(_test.hookReviewStatus(configFile).reviewed, true);
+
 const cleaned = _test.removeManagedHookBlock(installed);
 assert.doesNotMatch(cleaned, /codex-done-notifier hook/);
 
@@ -74,6 +77,26 @@ assert.equal(_test.codexConfigPath({ cwd: project, global: true }), path.join(os
 process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE = configuredConfigFile;
 assert.equal(_test.shouldNotify({ marker, sessionId: "session-1" }), true);
 assert.equal(_test.shouldNotify({ marker, sessionId: "session-2" }), false);
+assert.equal(_test.normalizeSoundName("ding"), "ding");
+assert.equal(_test.normalizeSoundName("exclamation"), "exclamation");
+assert.equal(_test.normalizeSoundName("unknown"), "exclamation");
+assert.equal(_test.markerSoundEnabled({ sound: "none" }), false);
+assert.equal(_test.markerNotificationEnabled({ notificationEnabled: false }), false);
+assert.equal(_test.markerHasOutput({ soundEnabled: false, notificationEnabled: false }), false);
+fs.writeFileSync(marker, JSON.stringify({ enabled: true, soundEnabled: false, notificationEnabled: false }));
+assert.equal(_test.shouldNotify({ marker, sessionId: "session-1" }), false);
+fs.writeFileSync(marker, JSON.stringify({ enabled: true, sessions: ["session-1"] }));
+assert.equal(_test.notificationSound({ sound: "hand" }), "hand");
+assert.equal(_test.notificationSound({ soundEnabled: false, sound: "hand" }), "none");
+assert.equal(
+  _test.notificationSoundFile({ soundFile: ".codex/done.wav" }, marker),
+  path.join(project, ".codex", "done.wav")
+);
+assert.equal(
+  _test.notificationSoundFile({ soundFile: path.join(project, "done.wav") }, marker),
+  path.join(project, "done.wav")
+);
+assert.match(_test.windowsDefaultSoundFile("ding"), /ding\.wav$/i);
 
 process.env.CODEX_DONE_NOTIFIER_ENABLED = "1";
 assert.equal(_test.shouldNotify({ marker: "", sessionId: "" }), true);
