@@ -1,13 +1,12 @@
 {
   "name": "@chogwanghyung/codex-ai-bridge-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "MCP bridge for Codex to ask Claude and Gemini for planning, review, QA, and implementation advice.",
   "bin": {
     "codex-ai-bridge-mcp": "src/index.js"
   },
   "files": [
     "src",
-    "test",
     "LICENSE",
     "README.md",
     "README.ko.md"

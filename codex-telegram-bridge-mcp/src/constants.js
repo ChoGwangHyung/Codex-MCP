@@ -1,7 +1,7 @@
 "use strict";
 
 const SERVER_NAME = "codex-telegram-bridge-mcp";
-const SERVER_VERSION = "1.0.0";
+const SERVER_VERSION = "1.0.2";
 const DEFAULT_TELEGRAM_TIMEOUT_MS = 120000;
 const PROJECT_ENV_FILE = "config.toml.env";
 const PROJECT_ACCESS_FILE = "config.toml.access.json";

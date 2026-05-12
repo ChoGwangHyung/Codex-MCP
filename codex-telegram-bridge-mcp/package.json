@@ -1,6 +1,6 @@
 {
   "name": "@chogwanghyung/codex-telegram-bridge-mcp",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "MCP bridge for Codex to communicate with allowlisted Telegram chats.",
   "bin": {
     "codex-telegram-bridge-mcp": "src/index.js",
@@ -9,7 +9,6 @@
   "files": [
     "src",
     "scripts",
-    "test",
     "LICENSE",
     "README.md",
     "README.ko.md"
