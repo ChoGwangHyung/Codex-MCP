@@ -42,7 +42,7 @@ assert.doesNotMatch(lineBreakConsoleLine, /[\r\n\u2028\u2029]/);
 assert.doesNotMatch(lineBreakConsoleLine, /\\n/);
 assert.match(lineBreakConsoleLine, /line 1 \| line 2 \| line 3 \| line 4 \| line 5/);
 
-const mediaPath = "D:\\Projects\\TalkLog\\.codex\\telegram-runtime\\downloads\\10-20-photo-file_1.jpg";
+const mediaPath = "<project-dir>\\.codex\\telegram-runtime\\downloads\\10-20-photo-file_1.jpg";
 const mediaMessage = {
   ...message,
   text: [
@@ -54,7 +54,7 @@ const mediaMessage = {
   attachments: [
     { type: "photo", localPath: mediaPath, mimeType: "image/jpeg" },
     { type: "document", localPath: mediaPath, mimeType: "image/jpeg" },
-    { type: "document", localPath: "D:\\Projects\\TalkLog\\.codex\\telegram-runtime\\downloads\\notes.txt", mimeType: "text/plain" }
+    { type: "document", localPath: "<project-dir>\\.codex\\telegram-runtime\\downloads\\notes.txt", mimeType: "text/plain" }
   ]
 };
 const mediaConsoleLine = _test.formatConsoleRelayPrompt(mediaMessage);

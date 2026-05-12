@@ -8,12 +8,12 @@ Korean documentation: [README.ko.md](README.ko.md)
 This is not an MCP server. It does not add model-visible tools and does not add
 token cost. Codex runs it locally through the lifecycle hook system.
 
-## Install From This Repository
+## Install
 
 ```powershell
-git clone https://github.com/ChoGwangHyung/Codex-MCP.git
-cd Codex-MCP
-node .\codex-done-notifier\src\cli.js configure
+npm install -g @chogwanghyung/codex-done-notifier
+cd <project-dir>
+codex-done-notifier configure
 ```
 
 By default, `configure` updates only the current project's `.codex/config.toml`
@@ -23,14 +23,19 @@ and also enables notifications for that project by creating
 Use a user-level hook only when you want one hook available across projects:
 
 ```powershell
-node .\codex-done-notifier\src\cli.js configure --global
+codex-done-notifier configure --global
 ```
 
-If installed globally later, the same commands are available as:
+## Install From This Repository
 
 ```powershell
-codex-done-notifier configure
+git clone https://github.com/ChoGwangHyung/Codex-MCP.git
+cd Codex-MCP
+node .\codex-done-notifier\src\cli.js configure
 ```
+
+From a repository checkout, replace `codex-done-notifier` in the examples below
+with `node <repo>\codex-done-notifier\src\cli.js`.
 
 After installing or changing hooks, existing Codex sessions should be restarted
 or resumed once so they reload config.
@@ -41,8 +46,8 @@ or resumed once so they reload config.
 notifications back on after `disable`, or to enable a different project:
 
 ```powershell
-cd D:\Projects\SomeProject
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable
+cd <project-dir>
+codex-done-notifier enable
 ```
 
 This creates:
@@ -54,7 +59,7 @@ This creates:
 Set a project-specific sound preset:
 
 ```powershell
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --sound exclamation
+codex-done-notifier enable --sound exclamation
 ```
 
 Supported presets are `ding`, `asterisk`, `beep`, `exclamation`, `hand`,
@@ -63,7 +68,7 @@ Supported presets are `ding`, `asterisk`, `beep`, `exclamation`, `hand`,
 Set a project-specific sound file:
 
 ```powershell
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --sound-file .codex\done.wav
+codex-done-notifier enable --sound-file .codex\done.wav
 ```
 
 On Windows, custom sound files use `System.Media.SoundPlayer`, so `.wav` is the
@@ -72,13 +77,13 @@ portable choice. On macOS, custom sound files are played with `afplay`.
 Turn off only the sound while keeping desktop notifications:
 
 ```powershell
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --no-sound
+codex-done-notifier enable --no-sound
 ```
 
 Turn off only the desktop notification while keeping sound:
 
 ```powershell
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js enable --no-notification
+codex-done-notifier enable --no-notification
 ```
 
 If both outputs are turned off, the project behaves as disabled. A later plain
@@ -88,7 +93,7 @@ If both outputs are turned off, the project behaves as disabled. A later plain
 Disable it:
 
 ```powershell
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js disable
+codex-done-notifier disable
 ```
 
 ## Enable One Session
@@ -150,8 +155,8 @@ If none match, it exits quietly.
 Check the current project first:
 
 ```powershell
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js status
-node D:\Projects\MCP\Codex-MCP\codex-done-notifier\src\cli.js test
+codex-done-notifier status
+codex-done-notifier test
 ```
 
 `status` should show `hook_installed: yes`, `hook_reviewed: yes`, and
