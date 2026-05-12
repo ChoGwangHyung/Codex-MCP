@@ -46,6 +46,15 @@ For `telegram_send`, `telegram_wait_reply`, `telegram_ask`, and media tools,
 Telegram bots cannot DM a user first. Pairing therefore starts with a user
 opening the bot or pressing a deep-link Start button.
 
+## Install
+
+```powershell
+npm install -g @chogwanghyung/codex-telegram-bridge-mcp
+```
+
+The package exposes the `codex-telegram-bridge-mcp` MCP binary and the
+`codex-telegram-permission-hook` Codex hook binary.
+
 ## Repository Layout
 
 ```text
@@ -93,6 +102,7 @@ CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_BEHAVIOR=ask
 # CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED=1
 # CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=1
+# CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=global
 ```
 
 Commit only a safe `.codex/config.toml.env.example` file.
@@ -329,17 +339,24 @@ approval prompt. The hook sends the request to Telegram and returns Codex's
 `allow` or `deny` decision from the Telegram reply.
 
 When the MCP server starts and Telegram is fully configured, it automatically
-installs a user-level Codex `PermissionRequest` hook into
-`$CODEX_HOME/config.toml` or `%USERPROFILE%/.codex/config.toml`. Project
-`.codex/config.toml` files are not modified. This makes the hook available to
-existing Codex projects without per-project setup.
+installs Codex `PermissionRequest` and `PostToolUse` hooks. By default it uses
+the user-level Codex config at `$CODEX_HOME/config.toml` or
+`%USERPROFILE%/.codex/config.toml`, which makes the hook available to existing
+Codex projects without per-project setup.
+
+Set `CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=local` to install the managed hook
+block into the current project's `.codex/config.toml` instead. Local scope is
+cleaner when you only want Telegram approval in projects that explicitly enable
+this MCP server.
 
 If the current Codex process loaded config before the hook was installed,
 restart or resume Codex once. After that, MCP connection plus the user-level
 hook is enough for native permission requests to go through Telegram.
 
 Set `CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=0` to disable automatic hook
-installation. To inspect or manually install the same hook, print the snippet:
+installation. The installer preserves Codex `/hooks` trust state when refreshing
+the managed block, so reviewing a hook should not be undone by MCP restart. To
+inspect or manually install the same hook, print the snippet:
 
 ```powershell
 node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js hook-snippet

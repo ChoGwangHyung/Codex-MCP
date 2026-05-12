@@ -1,6 +1,6 @@
 {
-  "name": "codex-telegram-bridge-mcp",
-  "version": "1.0.0",
+  "name": "@chogwanghyung/codex-telegram-bridge-mcp",
+  "version": "1.0.1",
   "description": "MCP bridge for Codex to communicate with allowlisted Telegram chats.",
   "bin": {
     "codex-telegram-bridge-mcp": "src/index.js",
@@ -20,5 +20,26 @@
   "engines": {
     "node": ">=20"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "ChoGwangHyung",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChoGwangHyung/Codex-MCP.git",
+    "directory": "codex-telegram-bridge-mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/ChoGwangHyung/Codex-MCP/issues"
+  },
+  "homepage": "https://github.com/ChoGwangHyung/Codex-MCP/tree/main/codex-telegram-bridge-mcp#readme",
+  "keywords": [
+    "codex",
+    "mcp",
+    "telegram",
+    "approval",
+    "hook",
+    "automation"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

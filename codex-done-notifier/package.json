@@ -1,0 +1,42 @@
+{
+  "name": "@chogwanghyung/codex-done-notifier",
+  "version": "0.1.0",
+  "description": "Codex Stop hook notifier with local sound and desktop notifications.",
+  "bin": {
+    "codex-done-notifier": "src/cli.js"
+  },
+  "files": [
+    "src",
+    "test",
+    "LICENSE",
+    "README.md",
+    "README.ko.md"
+  ],
+  "scripts": {
+    "check": "node --check src/cli.js && node test/cli.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "author": "ChoGwangHyung",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChoGwangHyung/Codex-MCP.git",
+    "directory": "codex-done-notifier"
+  },
+  "bugs": {
+    "url": "https://github.com/ChoGwangHyung/Codex-MCP/issues"
+  },
+  "homepage": "https://github.com/ChoGwangHyung/Codex-MCP/tree/main/codex-done-notifier#readme",
+  "keywords": [
+    "codex",
+    "hook",
+    "notification",
+    "notifier",
+    "automation"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -6,12 +6,24 @@ tools they need.
 
 Korean documentation: [README.ko.md](README.ko.md)
 
-## Included MCP Servers
+## Included Packages
 
-| MCP | Description |
+| Package | Description |
 | --- | --- |
-| `codex-ai-bridge-mcp` | Calls Claude Code and Gemini CLI for bounded planning, review, QA, architecture, security, or implementation advice. |
-| `codex-telegram-bridge-mcp` | Sends and receives Telegram messages and files through allowlisted chats, supports workflow approvals, auto-installs a user-level hook for native Codex permission approvals, and can relay Telegram messages into an active Codex session. |
+| `@chogwanghyung/codex-ai-bridge-mcp` | Calls Claude Code and Gemini CLI for bounded planning, review, QA, architecture, security, or implementation advice. |
+| `@chogwanghyung/codex-telegram-bridge-mcp` | Sends and receives Telegram messages and files through allowlisted chats, supports workflow approvals, auto-installs a user-level hook for native Codex permission approvals, and can relay Telegram messages into an active Codex session. |
+| `@chogwanghyung/codex-done-notifier` | Local Codex `Stop` hook that plays a sound and shows a desktop notification when selected Codex sessions finish. |
+
+## Install
+
+```powershell
+npm install -g @chogwanghyung/codex-ai-bridge-mcp
+npm install -g @chogwanghyung/codex-telegram-bridge-mcp
+```
+
+`codex-done-notifier` is currently included for local testing from this
+repository. It can be installed from this checkout or published later as a
+separate package.
 
 ## Layout
 
@@ -19,6 +31,7 @@ Korean documentation: [README.ko.md](README.ko.md)
 Codex-MCP/
   codex-ai-bridge-mcp/
   codex-telegram-bridge-mcp/
+  codex-done-notifier/
 ```
 
 ## Validate

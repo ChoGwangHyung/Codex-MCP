@@ -1,5 +1,5 @@
 {
-  "name": "codex-ai-bridge-mcp",
+  "name": "@chogwanghyung/codex-ai-bridge-mcp",
   "version": "1.0.0",
   "description": "MCP bridge for Codex to ask Claude and Gemini for planning, review, QA, and implementation advice.",
   "bin": {
@@ -19,5 +19,26 @@
   "engines": {
     "node": ">=20"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "author": "ChoGwangHyung",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ChoGwangHyung/Codex-MCP.git",
+    "directory": "codex-ai-bridge-mcp"
+  },
+  "bugs": {
+    "url": "https://github.com/ChoGwangHyung/Codex-MCP/issues"
+  },
+  "homepage": "https://github.com/ChoGwangHyung/Codex-MCP/tree/main/codex-ai-bridge-mcp#readme",
+  "keywords": [
+    "codex",
+    "mcp",
+    "claude",
+    "gemini",
+    "review",
+    "automation"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
 }

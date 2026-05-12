@@ -23,7 +23,7 @@ Typical uses:
 - Parallel second opinions from Claude and Gemini.
 
 This server intentionally does not include Telegram tools. Use
-`codex-telegram-bridge-mcp` for notifications and approvals.
+`@chogwanghyung/codex-telegram-bridge-mcp` for notifications and approvals.
 
 ## Requirements
 
@@ -31,6 +31,14 @@ This server intentionally does not include Telegram tools. Use
 - Claude Code CLI if `claude_task` is used.
 - Gemini CLI if `gemini_task` is used.
 - A Codex project with this MCP server configured.
+
+## Install
+
+```powershell
+npm install -g @chogwanghyung/codex-ai-bridge-mcp
+```
+
+The package exposes the `codex-ai-bridge-mcp` binary for Codex MCP config.
 
 ## Codex Configuration
 

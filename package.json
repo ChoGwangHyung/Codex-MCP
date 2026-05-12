@@ -6,7 +6,8 @@
   "license": "MIT",
   "workspaces": [
     "codex-ai-bridge-mcp",
-    "codex-telegram-bridge-mcp"
+    "codex-telegram-bridge-mcp",
+    "codex-done-notifier"
   ],
   "scripts": {
     "check": "npm run check --workspaces --if-present"

@@ -68,8 +68,17 @@ function codexConfigPath() {
   if (process.env.CODEX_TELEGRAM_PERMISSION_HOOK_CONFIG_FILE) {
     return process.env.CODEX_TELEGRAM_PERMISSION_HOOK_CONFIG_FILE;
   }
+  if (permissionHookScope() === "local") {
+    return path.join(process.cwd(), ".codex", "config.toml");
+  }
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   return path.join(codexHome, "config.toml");
+}
+
+function permissionHookScope() {
+  const value = String(process.env.CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE || "").trim().toLowerCase();
+  if (value === "local" || value === "project") return "local";
+  return "global";
 }
 
 function permissionHookCommand() {
@@ -82,7 +91,26 @@ function permissionHookCommand() {
 
 function removeManagedHookBlock(text) {
   const pattern = new RegExp(`\\r?\\n?${escapeRegex(HOOK_BEGIN)}[\\s\\S]*?${escapeRegex(HOOK_END)}\\r?\\n?`, "g");
-  return String(text || "").replace(pattern, "\n").replace(/\n{3,}/g, "\n\n").trimEnd();
+  return String(text || "")
+    .replace(pattern, (block) => {
+      const preserved = extractHookStateSection(block);
+      return preserved ? `\n${preserved}\n` : "\n";
+    })
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
+function extractHookStateSection(text) {
+  const lines = String(text || "").split(/\r?\n/);
+  const preserved = [];
+  let preserving = false;
+  for (const line of lines) {
+    if (line === HOOK_BEGIN || line === HOOK_END) continue;
+    if (/^\s*\[hooks\.state(?:\]|\.)/.test(line)) preserving = true;
+    else if (preserving && /^\s*\[/.test(line) && !/^\s*\[hooks\.state(?:\]|\.)/.test(line)) preserving = false;
+    if (preserving) preserved.push(line);
+  }
+  return preserved.join("\n").trim();
 }
 
 function ensureCodexHooksFeature(text) {
@@ -176,6 +204,8 @@ module.exports = {
   permissionHookStatus,
   codexConfigPath,
   permissionHookCommand,
+  permissionHookScope,
   ensureCodexHooksFeature,
-  removeManagedHookBlock
+  removeManagedHookBlock,
+  extractHookStateSection
 };
