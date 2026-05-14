@@ -1,6 +1,6 @@
 {
   "name": "@chogwanghyung/codex-done-notifier",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Codex Stop hook notifier with local sound and desktop notifications.",
   "bin": {
     "codex-done-notifier": "src/cli.js"

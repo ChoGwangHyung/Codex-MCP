@@ -40,6 +40,18 @@ node .\codex-done-notifier\src\cli.js configure
 hook을 설치하거나 바꾼 뒤 이미 실행 중인 Codex 세션은 한 번 `exit` 후
 `resume`해서 config를 다시 읽게 하는 것이 안전합니다.
 
+Codex가 `/hooks`에서 hook review를 한 번 요구할 수 있습니다. Windows에서
+같은 프로젝트를 `D:\Project`와 `d:\project`처럼 다른 대소문자 경로로
+resume하면 같은 hook도 다시 review 대상으로 보일 수 있습니다. 이 경우
+프로젝트 폴더에서 다음 명령을 실행하세요.
+
+```powershell
+codex-done-notifier trust
+```
+
+현재 hook hash를 일반 경로와 lowercase 경로 형태 모두로 `~/.codex/config.toml`에
+기록합니다.
+
 ## 특정 프로젝트만 켜기
 
 `configure`는 현재 프로젝트 알림을 자동으로 켭니다. `disable` 후 다시 켜거나,
@@ -136,6 +148,7 @@ codex resume
 | `enable --no-notification` 또는 `enable --sound-only` | 화면 알림만 끕니다. |
 | `disable` | 현재 프로젝트에서 알림을 끕니다. |
 | `status` | hook과 현재 프로젝트 상태를 확인합니다. |
+| `trust` | 현재 hook trust hash를 Windows 경로 대소문자 variant까지 기록합니다. |
 | `test` | 테스트 알림을 보냅니다. |
 | `hook-snippet` | hook TOML snippet을 출력합니다. |
 
@@ -159,9 +172,15 @@ codex-done-notifier test
 ```
 
 `status`에서 `hook_installed: yes`, `hook_reviewed: yes`,
-`enabled_here: yes`가 보여야 합니다. Codex 세션이 이미 열린 뒤 hook을
-설치했거나 trust 처리했다면, 해당 세션은 한 번 `exit` 후 `resume`해서 hook
-config를 다시 읽게 해야 합니다.
+`enabled_here: yes`가 보여야 합니다. `hook_trust_status`와 현재 hook hash도
+함께 출력됩니다. Codex 세션이 이미 열린 뒤 hook을 설치했거나 trust
+처리했다면, 해당 세션은 한 번 `exit` 후 `resume`해서 hook config를 다시
+읽게 해야 합니다.
+
+resume 뒤 같은 Stop hook을 계속 review하라고 나오면 Windows 경로 대소문자
+차이 때문에 Codex hook trust key가 달라진 경우가 많습니다. 프로젝트
+폴더에서 `codex-done-notifier trust`를 실행한 뒤 세션을 한 번 `exit` 후
+`resume`하세요.
 
 `test`가 `sent`를 출력하는데도 아무 알림이 없다면 hook 실행 자체는 가능한
 상태이고, 대개 Windows Focus Assist, PowerShell/터미널 알림 차단, silent

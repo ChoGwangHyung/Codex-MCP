@@ -39,6 +39,17 @@ with `node <repo>\codex-done-notifier\src\cli.js`.
 After installing or changing hooks, existing Codex sessions should be restarted
 or resumed once so they reload config.
 
+Codex may ask you to review the hook once through `/hooks`. On Windows, if the
+same project is later resumed with different path casing such as `D:\Project`
+vs `d:\project`, run:
+
+```powershell
+codex-done-notifier trust
+```
+
+This records the current hook hash for the normal and lowercase path forms in
+`~/.codex/config.toml`.
+
 ## Enable One Project
 
 `configure` already enables the current project. Use `enable` later to turn
@@ -135,6 +146,7 @@ codex resume
 | `enable --no-notification` or `enable --sound-only` | Turn off desktop notifications only. |
 | `disable` | Disable notifications for the current project. |
 | `status` | Show hook and current project status. |
+| `trust` | Record the current hook trust hash, including Windows path-case variants. |
 | `test` | Send a test notification. |
 | `hook-snippet` | Print the hook TOML snippet. |
 
@@ -158,9 +170,14 @@ codex-done-notifier test
 ```
 
 `status` should show `hook_installed: yes`, `hook_reviewed: yes`, and
-`enabled_here: yes`. If the hook was installed or trusted after the Codex
-session was already open, exit that session and resume it once so Codex reloads
-the hook config.
+`enabled_here: yes`. It also prints `hook_trust_status` and the current hook
+hash. If the hook was installed or trusted after the Codex session was already
+open, exit that session and resume it once so Codex reloads the hook config.
+
+If Codex keeps asking to review the same Stop hook after resume, the most common
+Windows cause is a path-casing mismatch in Codex's hook trust key. Run
+`codex-done-notifier trust` from the project directory, then exit and resume the
+session once.
 
 If `test` prints `sent` but nothing appears, the hook is runnable and the issue
 is usually the desktop notification environment: Windows Focus Assist, disabled

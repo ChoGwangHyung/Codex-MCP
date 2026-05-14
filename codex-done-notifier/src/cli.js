@@ -2,6 +2,7 @@
 "use strict";
 
 const fs = require("node:fs");
+const crypto = require("node:crypto");
 const os = require("node:os");
 const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
@@ -18,6 +19,7 @@ async function main(argv = process.argv) {
     if (command === "enable") return enable(argv.slice(3));
     if (command === "disable") return disable(argv.slice(3));
     if (command === "status") return status(argv.slice(3));
+    if (command === "trust") return trust(argv.slice(3));
     if (command === "hook") return hook(argv.slice(3));
     if (command === "test") return testNotification();
     if (command === "hook-snippet") return printHookSnippet();
@@ -29,10 +31,11 @@ async function main(argv = process.argv) {
 }
 
 function configure(args = []) {
+  const cwd = commandCwd(args);
   if (hasFlag(args, "--no-enable")) {
     const result = ensureHookInstalled({
       global: hasFlag(args, "--global"),
-      cwd: process.cwd(),
+      cwd,
       hookConfig: disabledHookConfig()
     });
     console.log(`${result.changed ? "installed" : "already installed"}: ${result.path}`);
@@ -42,7 +45,7 @@ function configure(args = []) {
 }
 
 function unconfigure(args = []) {
-  const file = codexConfigPath({ global: hasFlag(args, "--global"), cwd: process.cwd() });
+  const file = codexConfigPath({ global: hasFlag(args, "--global"), cwd: commandCwd(args) });
   const before = readText(file);
   const after = removeManagedHookBlock(before);
   if (after !== before) fs.writeFileSync(file, after ? `${after.trimEnd()}\n` : "");
@@ -50,7 +53,7 @@ function unconfigure(args = []) {
 }
 
 function enable(args = []) {
-  const cwd = process.cwd();
+  const cwd = commandCwd(args);
   const global = hasFlag(args, "--global");
   const existingConfig = currentNotifierConfig({ global, cwd });
   const baseConfig = existingConfig.configured ? existingConfig : {};
@@ -89,7 +92,7 @@ function enable(args = []) {
 }
 
 function disable(args = []) {
-  const cwd = process.cwd();
+  const cwd = commandCwd(args);
   const global = hasFlag(args, "--global");
   const existingConfig = currentNotifierConfig({ global, cwd });
   const baseConfig = existingConfig.configured ? existingConfig : {};
@@ -109,7 +112,7 @@ function disable(args = []) {
 }
 
 function status(args = []) {
-  const cwd = process.cwd();
+  const cwd = commandCwd(args);
   const localHookStatus = doneHookStatus({ global: false, cwd });
   const globalHookStatus = doneHookStatus({ global: true, cwd });
   const selectedHookStatus = hasFlag(args, "--global") ? globalHookStatus : localHookStatus;
@@ -118,6 +121,8 @@ function status(args = []) {
   console.log(`hook_installed: ${selectedHookStatus.installed ? "yes" : "no"}`);
   console.log(`hook_config: ${selectedHookStatus.path}`);
   console.log(`hook_reviewed: ${selectedHookStatus.reviewed ? "yes" : "no"}`);
+  if (selectedHookStatus.trustStatus) console.log(`hook_trust_status: ${selectedHookStatus.trustStatus}`);
+  if (selectedHookStatus.currentHash) console.log(`hook_current_hash: ${selectedHookStatus.currentHash}`);
   if (selectedHookStatus.reviewedPath) console.log(`hook_reviewed_in: ${selectedHookStatus.reviewedPath}`);
   console.log(`local_hook_installed: ${localHookStatus.installed ? "yes" : "no"}`);
   console.log(`local_hook_config: ${localHookStatus.path}`);
@@ -134,6 +139,34 @@ function status(args = []) {
     if (markerSoundEnabled(config) && config.soundFile) console.log(`sound_file: ${config.soundFile}`);
   }
   console.log(`session_env_enabled: ${process.env.CODEX_DONE_NOTIFIER_ENABLED === "1" ? "yes" : "no"}`);
+}
+
+function trust(args = []) {
+  const cwd = commandCwd(args);
+  const global = hasFlag(args, "--global");
+  const hookStatus = doneHookStatus({ global, cwd });
+  if (!hookStatus.installed) {
+    throw new Error(`codex-done-notifier hook is not installed: ${hookStatus.path}`);
+  }
+  if (!hookStatus.currentHash) {
+    throw new Error(`cannot compute Codex hook trust hash: ${hookStatus.path}`);
+  }
+
+  const stateFile = globalCodexConfigPath();
+  const keys = hookStateKeys(hookStatus.path);
+  withFileLock(`${stateFile}.lock`, () => {
+    let text = readText(stateFile);
+    for (const key of keys) {
+      text = upsertHookTrustedHash(text, key, hookStatus.currentHash);
+    }
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, `${text.trimEnd()}\n`);
+  });
+
+  console.log(`trusted: ${hookStatus.path}`);
+  console.log(`trusted_hash: ${hookStatus.currentHash}`);
+  console.log(`state_file: ${stateFile}`);
+  console.log(`state_keys: ${keys.length}`);
 }
 
 async function hook(args = []) {
@@ -433,38 +466,158 @@ function ensureHookInstalled(options = {}) {
 function doneHookStatus(options = {}) {
   const file = codexConfigPath(options);
   const text = readText(file);
-  const review = hookReviewStatus(file);
   const config = currentNotifierConfig(options);
+  const currentHash = currentManagedHookHash(text);
+  const review = hookReviewStatus(file, currentHash);
   return {
     ...config,
     installed: text.includes(HOOK_BEGIN) && text.includes(HOOK_END),
     path: file,
     reviewed: review.reviewed,
-    reviewedPath: review.path
+    reviewedPath: review.path,
+    trustStatus: review.status,
+    currentHash
   };
 }
 
-function hookReviewStatus(configPath) {
-  const target = path.resolve(configPath);
-  const needles = hookStateNeedles(target).map((value) => value.toLowerCase());
-  for (const file of uniqueList([target, globalCodexConfigPath()])) {
-    const text = readText(file).toLowerCase();
-    if (!text) continue;
-    if (needles.some((needle) => text.includes(needle))) {
-      return { reviewed: true, path: file };
+function hookReviewStatus(configPath, expectedHash = "") {
+  const text = readText(globalCodexConfigPath());
+  if (!text) return { reviewed: false, path: "", status: "untrusted" };
+  const exactHash = findHookTrustedHash(text, hookStateKey(configPath));
+  if (exactHash) {
+    if (!expectedHash || exactHash === expectedHash) {
+      return { reviewed: true, path: globalCodexConfigPath(), status: "trusted" };
     }
+    return { reviewed: false, path: "", status: "modified" };
   }
-  return { reviewed: false, path: "" };
+  const hasPathVariant = hookStateKeys(configPath).some((key) => findHookTrustedHash(text, key));
+  return { reviewed: false, path: "", status: hasPathVariant ? "path-variant-only" : "untrusted" };
 }
 
 function hookStateNeedles(configPath) {
-  const escaped = configPath.replace(/\\/g, "\\\\");
+  return hookStateKeyVariants(configPath)
+    .flatMap((key) => tomlHookStateHeaders(key))
+    .map((header) => header.replace(/\]$/, ":"));
+}
+
+function hookStateKeyVariants(configPath) {
+  const variants = [path.resolve(configPath)];
+  try {
+    variants.push(fs.realpathSync.native(path.resolve(configPath)));
+  } catch {
+    // The config path may not exist yet during tests or before configure.
+  }
+  if (process.platform === "win32") {
+    variants.push(...variants.map((value) => value.toLowerCase()));
+  }
+  return Array.from(new Set(variants.filter(Boolean)));
+}
+
+function hookStateKey(configPath) {
+  return `${path.resolve(configPath)}:stop:0:0`;
+}
+
+function hookStateKeys(configPath) {
+  return hookStateKeyVariants(configPath).map(hookStateKey);
+}
+
+function findHookTrustedHash(text, keyOrConfigPath) {
+  const keys = String(keyOrConfigPath).endsWith(":stop:0:0")
+    ? [String(keyOrConfigPath)]
+    : hookStateKeys(keyOrConfigPath);
+  for (const key of keys) {
+    for (const header of tomlHookStateHeaders(key)) {
+      const block = tomlTableBlock(text, header);
+      if (!block) continue;
+      const match = block.match(/^\s*trusted_hash\s*=\s*("(?:\\.|[^"\\])*")\s*$/m);
+      if (!match) continue;
+      try {
+        return JSON.parse(match[1]);
+      } catch {
+        return "";
+      }
+    }
+  }
+  return "";
+}
+
+function upsertHookTrustedHash(text, key, trustedHash) {
+  let content = String(text || "").trimEnd();
+  if (!content) content = "[hooks.state]";
+  if (!/^\s*\[hooks\.state]\s*$/m.test(content)) {
+    content = appendSection(content, "[hooks.state]").trimEnd();
+  }
+  const headers = tomlHookStateHeaders(key);
+  for (const header of headers) {
+    const existing = tomlTableBlock(content, header, { includeRange: true });
+    if (!existing) continue;
+    const replacement = existing.block.match(/^\s*trusted_hash\s*=/m)
+      ? existing.block.replace(/^\s*trusted_hash\s*=\s*"(?:\\.|[^"\\])*"\s*$/m, `trusted_hash = ${JSON.stringify(trustedHash)}`)
+      : `${existing.block.trimEnd()}\ntrusted_hash = ${JSON.stringify(trustedHash)}\n`;
+    return `${content.slice(0, existing.start)}${replacement}${content.slice(existing.end)}`;
+  }
+  return `${content}\n\n${headers[0]}\ntrusted_hash = ${JSON.stringify(trustedHash)}`;
+}
+
+function tomlHookStateHeaders(key) {
+  const escaped = key.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   return [
-    `[hooks.state.'${configPath}:stop:`,
-    `[hooks.state."${configPath}:stop:`,
-    `[hooks.state.'${escaped}:stop:`,
-    `[hooks.state."${escaped}:stop:`
+    `[hooks.state.'${key}']`,
+    `[hooks.state."${escaped}"]`
   ];
+}
+
+function tomlTableBlock(text, header, options = {}) {
+  const source = String(text || "");
+  const index = source.indexOf(header);
+  if (index < 0) return options.includeRange ? null : "";
+  const nextMatch = source.slice(index + header.length).match(/\r?\n\s*\[[^\]]+]/);
+  const end = nextMatch ? index + header.length + nextMatch.index : source.length;
+  const block = source.slice(index, end);
+  return options.includeRange ? { block, start: index, end } : block;
+}
+
+function currentManagedHookHash(text) {
+  const block = managedHookBlock(text);
+  if (!block) return "";
+  const command = extractManagedHookCommand(block);
+  if (!command) return "";
+  const timeoutSec = extractManagedHookTimeout(block);
+  const statusMessage = extractManagedHookStatusMessage(block);
+  return codexCommandHookHash({
+    eventName: "stop",
+    command,
+    timeoutSec,
+    statusMessage
+  });
+}
+
+function codexCommandHookHash({ eventName, matcher = null, command, timeoutSec = 600, statusMessage = "" }) {
+  const handler = {
+    type: "command",
+    command: String(command || ""),
+    timeout: Math.max(1, Number(timeoutSec) || 600),
+    async: false
+  };
+  if (statusMessage) handler.statusMessage = String(statusMessage);
+  const identity = {
+    event_name: eventName,
+    hooks: [handler]
+  };
+  if (matcher !== null && matcher !== undefined) identity.matcher = matcher;
+  const serialized = JSON.stringify(canonicalJson(identity));
+  return `sha256:${crypto.createHash("sha256").update(Buffer.from(serialized)).digest("hex")}`;
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (value && typeof value === "object") {
+    return Object.keys(value).sort().reduce((result, key) => {
+      result[key] = canonicalJson(value[key]);
+      return result;
+    }, {});
+  }
+  return value;
 }
 
 function codexConfigPath(options = {}) {
@@ -599,6 +752,21 @@ function extractManagedHookConfig(block) {
 
 function extractManagedHookCommand(block) {
   const match = String(block || "").match(/^\s*command\s*=\s*("(?:\\.|[^"\\])*")\s*$/m);
+  if (!match) return "";
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return "";
+  }
+}
+
+function extractManagedHookTimeout(block) {
+  const match = String(block || "").match(/^\s*timeout\s*=\s*(\d+)\s*$/m);
+  return match ? Number(match[1]) : 600;
+}
+
+function extractManagedHookStatusMessage(block) {
+  const match = String(block || "").match(/^\s*statusMessage\s*=\s*("(?:\\.|[^"\\])*")\s*$/m);
   if (!match) return "";
   try {
     return JSON.parse(match[1]);
@@ -751,6 +919,38 @@ function readText(file) {
   }
 }
 
+function withFileLock(lockFile, callback) {
+  fs.mkdirSync(path.dirname(lockFile), { recursive: true });
+  const deadline = Date.now() + 5000;
+  let fd;
+  while (fd === undefined) {
+    try {
+      fd = fs.openSync(lockFile, "wx");
+    } catch (error) {
+      if (!error || error.code !== "EEXIST" || Date.now() > deadline) throw error;
+      sleepMs(50);
+    }
+  }
+  try {
+    return callback();
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      // Ignore cleanup failures.
+    }
+    try {
+      fs.unlinkSync(lockFile);
+    } catch {
+      // Ignore cleanup failures.
+    }
+  }
+}
+
+function sleepMs(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 function readStdin() {
   return new Promise((resolve, reject) => {
     let raw = "";
@@ -775,6 +975,11 @@ function optionValue(args, name) {
   const index = args.indexOf(name);
   if (index < 0) return "";
   return String(args[index + 1] || "").trim();
+}
+
+function commandCwd(args = []) {
+  const cwd = optionValue(args, "--cwd");
+  return cwd ? path.resolve(cwd) : process.cwd();
 }
 
 function hasFlag(args, name) {
@@ -845,10 +1050,6 @@ function indentLines(value, spaces) {
     .join("\n");
 }
 
-function uniqueList(values) {
-  return Array.from(new Set(values.filter(Boolean).map((value) => path.resolve(value))));
-}
-
 function usage(exitCode) {
   console.log([
     "Usage: codex-done-notifier <command>",
@@ -875,6 +1076,7 @@ function usage(exitCode) {
     "                  Keep sound on and turn desktop notifications off",
     "  disable         Disable notifications for the current project",
     "  status          Show hook and current project status",
+    "  trust           Persist the current hook trust hash in ~/.codex/config.toml",
     "  hook            Run as a Codex Stop hook",
     "  test            Send a test notification",
     "  hook-snippet    Print the managed hook TOML"
@@ -901,9 +1103,15 @@ module.exports = {
     removeManagedHookBlock,
     windowsDefaultSoundFile,
     buildHookCommand,
+    codexCommandHookHash,
     currentNotifierConfig,
+    currentManagedHookHash,
+    findHookTrustedHash,
     hookReviewStatus,
+    hookStateKeys,
     hookStateNeedles,
+    hookStateKeyVariants,
+    upsertHookTrustedHash,
     codexConfigPath,
     extractHookStateSection,
     markerHasOutput,

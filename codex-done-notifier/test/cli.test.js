@@ -7,6 +7,7 @@ const path = require("node:path");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-done-notifier-"));
 const configFile = path.join(tempDir, "config.toml");
+process.env.CODEX_HOME = tempDir;
 process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE = configFile;
 process.env.CODEX_DONE_NOTIFIER_HOOK_COMMAND = "node notifier.js hook";
 process.env.CODEX_DONE_NOTIFIER_DRY_RUN = "1";
@@ -37,12 +38,26 @@ assert.equal(_test.doneHookStatus().installed, true);
 assert.equal(_test.currentNotifierConfig().configured, true);
 assert.equal(_test.currentNotifierConfig().enabled, true);
 assert.equal(_test.currentNotifierConfig().sound, "exclamation");
+assert.equal(
+  _test.currentManagedHookHash(installed),
+  "sha256:c81ac9d53b1fcf57b7ca52b732145c1aaa693cb4a62c6c75653fda5df7b0caa7"
+);
 
 const second = _test.ensureHookInstalled();
 assert.equal(second.changed, false);
 
 fs.appendFileSync(configFile, `\n[hooks.state.'${configFile}:stop:0:0']\ntrusted_hash = "sha256:abc"\n`);
 assert.equal(_test.hookReviewStatus(configFile).reviewed, true);
+assert.equal(_test.hookReviewStatus(configFile, "sha256:abc").status, "trusted");
+assert.equal(_test.hookReviewStatus(configFile, "sha256:def").status, "modified");
+const trustedConfig = _test.upsertHookTrustedHash(
+  "model = \"gpt-5\"\n\n[hooks.state]\n\n[[hooks.Stop]]\nmatcher = \"*\"",
+  `${path.join(tempDir, "project", ".codex", "config.toml")}:stop:0:0`,
+  "sha256:def"
+);
+assert.match(trustedConfig, /model = "gpt-5"/);
+assert.match(trustedConfig, /\[\[hooks\.Stop]]/);
+assert.match(trustedConfig, /trusted_hash = "sha256:def"/);
 
 const cleaned = _test.removeManagedHookBlock(installed);
 assert.doesNotMatch(cleaned, /codex-done-notifier hook/);
@@ -75,7 +90,7 @@ assert.equal(_test.codexConfigPath({ cwd: project }), configFile);
 const configuredConfigFile = process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE;
 delete process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE;
 assert.equal(_test.codexConfigPath({ cwd: project }), path.join(project, ".codex", "config.toml"));
-assert.equal(_test.codexConfigPath({ cwd: project, global: true }), path.join(os.homedir(), ".codex", "config.toml"));
+assert.equal(_test.codexConfigPath({ cwd: project, global: true }), path.join(tempDir, "config.toml"));
 process.env.CODEX_DONE_NOTIFIER_CONFIG_FILE = configuredConfigFile;
 assert.equal(
   _test.shouldNotify({
