@@ -34,11 +34,12 @@ function maybeInstallPermissionHook() {
 
 function ensurePermissionHookInstalled() {
   const file = codexConfigPath();
-  const command = permissionHookCommand();
+  const permissionCommand = permissionHookCommand();
+  const stopCommand = stopHookCommand();
   const before = readText(file);
   const withoutManagedBlock = removeManagedHookBlock(before);
   const withFeature = ensureCodexHooksFeature(withoutManagedBlock);
-  const after = appendManagedHookBlock(withFeature, command);
+  const after = appendManagedHookBlock(withFeature, { permissionCommand, stopCommand });
 
   if (after !== before) {
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -86,6 +87,14 @@ function permissionHookCommand() {
     return process.env.CODEX_TELEGRAM_PERMISSION_HOOK_COMMAND;
   }
   const script = path.join(__dirname, "..", "scripts", "codex-permission-telegram.js");
+  return `node ${quoteCommandArg(script)}`;
+}
+
+function stopHookCommand() {
+  if (process.env.CODEX_TELEGRAM_STOP_HOOK_COMMAND) {
+    return process.env.CODEX_TELEGRAM_STOP_HOOK_COMMAND;
+  }
+  const script = path.join(__dirname, "..", "scripts", "codex-stop-telegram.js");
   return `node ${quoteCommandArg(script)}`;
 }
 
@@ -149,7 +158,7 @@ function ensureCodexHooksFeature(text) {
   return lines.join("\n").trimEnd();
 }
 
-function appendManagedHookBlock(text, command) {
+function appendManagedHookBlock(text, { permissionCommand, stopCommand }) {
   return appendSection(text, [
     HOOK_BEGIN,
     "[[hooks.PermissionRequest]]",
@@ -157,7 +166,7 @@ function appendManagedHookBlock(text, command) {
     "",
     "[[hooks.PermissionRequest.hooks]]",
     'type = "command"',
-    `command = ${JSON.stringify(command)}`,
+    `command = ${JSON.stringify(permissionCommand)}`,
     "timeout = 330",
     'statusMessage = "Waiting for Telegram approval"',
     "",
@@ -166,9 +175,18 @@ function appendManagedHookBlock(text, command) {
     "",
     "[[hooks.PostToolUse.hooks]]",
     'type = "command"',
-    `command = ${JSON.stringify(command)}`,
+    `command = ${JSON.stringify(permissionCommand)}`,
     "timeout = 30",
     'statusMessage = "Updating Telegram approval state"',
+    "",
+    "[[hooks.Stop]]",
+    'matcher = "*"',
+    "",
+    "[[hooks.Stop.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(stopCommand)}`,
+    "timeout = 30",
+    'statusMessage = "Sending Telegram reply"',
     HOOK_END
   ].join("\n"));
 }
@@ -204,6 +222,7 @@ module.exports = {
   permissionHookStatus,
   codexConfigPath,
   permissionHookCommand,
+  stopHookCommand,
   permissionHookScope,
   ensureCodexHooksFeature,
   removeManagedHookBlock,

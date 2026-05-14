@@ -102,7 +102,7 @@ function delay(ms) {
 function normalizeTelegramState(value) {
   const state = value && typeof value === "object" ? value : {};
   const inbox = Array.isArray(state.inbox) ? state.inbox.filter(isInboxMessage) : [];
-  const relay = state.relay && typeof state.relay === "object" ? state.relay : {};
+  const relay = normalizeRelayState(state.relay);
   const permissionAlwaysApprovals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
     ? state.permissionAlwaysApprovals
     : {};
@@ -119,6 +119,16 @@ function normalizeTelegramState(value) {
   };
 }
 
+function normalizeRelayState(value) {
+  const relay = value && typeof value === "object" ? value : {};
+  return {
+    ...relay,
+    pendingReplies: Array.isArray(relay.pendingReplies)
+      ? relay.pendingReplies.filter(isPendingReply)
+      : []
+  };
+}
+
 function isInboxMessage(value) {
   return Boolean(
     value &&
@@ -126,6 +136,15 @@ function isInboxMessage(value) {
     typeof value.id === "string" &&
     typeof value.chatId === "string" &&
     typeof value.text === "string"
+  );
+}
+
+function isPendingReply(value) {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof value.id === "string" &&
+    typeof value.chatId === "string"
   );
 }
 

@@ -23,11 +23,12 @@ general-purpose Telegram bot framework.
 | `telegram_approval_request` | Ask Telegram for an explicit workflow approval. |
 | `telegram_bridge_health` | Check token, allowlist, and runtime health. |
 
-The package also includes a Codex hook command:
+The package also includes Codex hook commands:
 
 | Command | Purpose |
 | --- | --- |
-| `codex-telegram-permission-hook` | Handle native Codex `PermissionRequest` approvals through Telegram. |
+| `codex-telegram-permission-hook` | Handle native Codex `PermissionRequest` approvals for Telegram-origin turns. |
+| `codex-telegram-stop-hook` | Send final replies for Telegram-origin turns from Codex `Stop` hooks. |
 
 For `telegram_send`, `telegram_wait_reply`, `telegram_ask`, and media tools,
 `chatId` may be omitted when exactly one Telegram chat is allowlisted.
@@ -38,7 +39,8 @@ For `telegram_send`, `telegram_wait_reply`, `telegram_ask`, and media tools,
 - A Telegram bot token from `@BotFather`.
 - A Telegram chat that has already sent `/start` or another message to the bot.
 - A Codex project configured to load this MCP server.
-- Codex hooks enabled when using native permission approval.
+- Codex hooks enabled when using native permission approval or automatic relay
+  replies.
 - Core Telegram tools run anywhere Node.js runs. Console relay mode uses bundled
   Windows PowerShell helpers; use `app-server` mode or disable relay on other
   platforms.
@@ -93,9 +95,7 @@ CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # Optional inbound media download settings:
 # CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR=<ProjectRoot>/.codex/telegram-runtime/downloads
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
-# Telegram-origin messages ask Codex to send the result back through Telegram.
-# Set to 0 to disable the injected reply contract.
-CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1
+# Telegram-origin requests are replied to by the bundled Stop hook.
 # Optional native Codex permission approval:
 # CODEX_TELEGRAM_APPROVAL_CHAT_IDS=<chat-id>
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
@@ -310,21 +310,20 @@ Console relay details:
 - The bridge auto-detects a Codex console ancestor when possible.
 - `CODEX_TELEGRAM_CODEX_CONSOLE_PID` can explicitly select the target console.
 - `CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS` delays the Enter key after text input.
-- `CODEX_TELEGRAM_CODEX_REPLY_REQUIRED=1` is the default. Telegram-origin
-  prompts include a short instruction to call `telegram_send` with the result.
-  Set it to `0` if you want one-way relay only.
+- Telegram-origin prompts are not modified with a `telegram_send` instruction.
+  The bundled `Stop` hook sends the final assistant message back to the source
+  Telegram chat after the turn completes.
 - `CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1` skips old inbox messages and pairing messages.
 - If Codex app-server status is available, the relay uses it as an idle gate and retries while the target thread is busy.
 
 Relayed prompts contain the Telegram `chatId` marker, the user's message text,
-downloaded attachment paths when present, and, by default, a short
-`telegram_send` reply instruction. Long Telegram file IDs and extra file
-metadata are kept out of the injected prompt so console submission stays
+and downloaded attachment paths when present. Long Telegram file IDs and extra
+file metadata are kept out of the injected prompt so console submission stays
 reliable; the full metadata remains in the inbox attachment object. In
 `app-server` mode, downloaded image attachments are also included as native
-`localImage` inputs. The MCP cannot read Codex's final screen output by itself;
-this injected reply contract is how Telegram-origin requests get their result
-back in Telegram.
+`localImage` inputs. When a relayed Telegram request is delivered, the bridge
+records a pending reply in the runtime state. The bundled `Stop` hook matches
+the completed turn and sends Codex's final assistant message back to Telegram.
 
 Check relay state:
 
@@ -339,7 +338,7 @@ approval prompt. The hook sends the request to Telegram and returns Codex's
 `allow` or `deny` decision from the Telegram reply.
 
 When the MCP server starts and Telegram is fully configured, it automatically
-installs Codex `PermissionRequest` and `PostToolUse` hooks. By default it uses
+installs Codex `PermissionRequest`, `PostToolUse`, and `Stop` hooks. By default it uses
 the user-level Codex config at `$CODEX_HOME/config.toml` or
 `%USERPROFILE%/.codex/config.toml`, which makes the hook available to existing
 Codex projects without per-project setup.
@@ -385,6 +384,15 @@ type = "command"
 command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
 timeout = 30
 statusMessage = "Updating Telegram approval state"
+
+[[hooks.Stop]]
+matcher = "*"
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-stop-telegram.js"
+timeout = 30
+statusMessage = "Sending Telegram reply"
 ```
 
 If installed globally from npm, use the package binary:
@@ -407,25 +415,41 @@ type = "command"
 command = "codex-telegram-permission-hook"
 timeout = 30
 statusMessage = "Updating Telegram approval state"
+
+[[hooks.Stop]]
+matcher = "*"
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "codex-telegram-stop-hook"
+timeout = 30
+statusMessage = "Sending Telegram reply"
 ```
 
 Behavior:
 
-- The approval prompt runs for Codex `PermissionRequest` events, such as shell
-  escalation, managed-network approval, `apply_patch`, and MCP tool approvals.
+- The approval prompt runs only while handling a request that originated from
+  the Telegram relay. Matching is based on the pending relay turn/session stored
+  in the Telegram runtime state.
+- Within a Telegram-origin turn, the hook can handle Codex `PermissionRequest`
+  events such as shell escalation, managed-network approval, `apply_patch`, and
+  MCP tool approvals.
 - CLI command prompts that look like `Would you like to run the following
   command?` are handled when Codex emits them as `PermissionRequest` events. The
   hook accepts both the standard `tool_input.command` payload and command-shaped
   payloads such as `command`, `cmd`, or `argv`.
 - When the MCP server starts with Telegram configured, it auto-installs the
-  user-level hook by default, so connected Codex sessions send native permission
-  requests to Telegram after restart/resume.
+  user-level hook by default. CLI-origin turns are ignored; only native
+  permission requests raised during Telegram-origin turns are sent to Telegram.
 - Codex may require newly installed or changed hooks to be reviewed in `/hooks`
   before they run. The bridge installs the hook configuration but does not mark
   hooks reviewed on the user's behalf.
-- The bundled `PostToolUse` hook updates the Telegram message when a request
-  falls back to the CLI prompt and is later approved there. CLI denial is not
-  observable from current Codex hook events because the tool does not run.
+- The bundled `PostToolUse` hook updates the Telegram message when a
+  Telegram-origin permission request falls back to the CLI prompt and is later
+  approved there. CLI denial is not observable from current Codex hook events
+  because the tool does not run.
+- The bundled `Stop` hook replies only to requests that originated from the
+  Telegram relay. Normal CLI-origin turns are ignored.
 - Telegram shows `승인`, `항상 승인`, and `거부` inline buttons. The internal
   request code is kept in the callback payload and is not shown in the message
   body. Buttons are removed after the first accepted response.

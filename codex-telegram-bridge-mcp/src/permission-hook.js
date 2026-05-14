@@ -23,6 +23,7 @@ const {
   parseApprovalDecision,
   truncateTelegramText
 } = require("./approval.js");
+const { isTelegramOriginHookInput } = require("./relay-origin.js");
 const {
   normalizeTimeout,
   sanitize,
@@ -52,6 +53,9 @@ async function handlePermissionHook(input, options = {}) {
     return "";
   }
   if (process.env.CODEX_TELEGRAM_PERMISSION_APPROVAL_ENABLED === "0") {
+    return "";
+  }
+  if (!isTelegramOriginHookInput(input)) {
     return "";
   }
 
@@ -107,6 +111,9 @@ async function handlePostToolUseHook(input, options = {}) {
     return "";
   }
   if (process.env.CODEX_TELEGRAM_CLI_APPROVAL_SYNC_ENABLED === "0") {
+    return "";
+  }
+  if (!isTelegramOriginHookInput(input)) {
     return "";
   }
   if (!bridgeEnabled() || !process.env.TELEGRAM_BOT_TOKEN) {

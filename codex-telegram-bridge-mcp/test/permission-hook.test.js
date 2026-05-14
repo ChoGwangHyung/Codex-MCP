@@ -24,6 +24,7 @@ const {
   parseApprovalCallbackData,
   parseApprovalDecision
 } = require("../src/approval.js");
+const { readTelegramState, writeTelegramState } = require("../src/state.js");
 
 assert.equal(parseApprovalDecision("approve abc123", "abc123"), "approved");
 assert.equal(parseApprovalDecision("승인 abc123", "abc123"), "approved");
@@ -78,6 +79,24 @@ assert.match(yesNoRequest.title, /shell_command/);
 assert.match(yesNoRequest.message, /powershell -NoProfile/);
 assert.match(yesNoRequest.message, /Run a smoke-test command/);
 assert.match(yesNoRequest.message, /session-yes-no/);
+
+function seedTelegramOrigin(input, id = "relay-origin") {
+  const state = readTelegramState();
+  state.relay = state.relay && typeof state.relay === "object" ? state.relay : {};
+  const existing = Array.isArray(state.relay.pendingReplies) ? state.relay.pendingReplies : [];
+  state.relay.pendingReplies = existing.filter((reply) => reply.id !== id);
+  state.relay.pendingReplies.push({
+    id,
+    inboxMessageId: id,
+    chatId: "12345",
+    threadId: input.session_id || input.sessionId || "",
+    turnId: input.turn_id || input.turnId || "",
+    cwd: input.cwd || "",
+    deliveredAt: new Date().toISOString(),
+    status: "pending"
+  });
+  writeTelegramState(state);
+}
 
 const allowOutput = JSON.parse(permissionDecisionOutput("allow"));
 assert.equal(allowOutput.hookSpecificOutput.hookEventName, "PermissionRequest");
@@ -136,12 +155,18 @@ async function telegramApiFn(method, payload) {
 
   approvalCallbackData = "";
   replied = false;
+  apiCalls.length = 0;
+  const nonTelegramOutput = await handlePermissionHook(hookInput, { telegramApiFn });
+  assert.equal(nonTelegramOutput, "");
+  assert.equal(apiCalls.length, 0);
+  seedTelegramOrigin(hookInput);
   const output = await handlePermissionHook(hookInput, { telegramApiFn });
   const parsed = JSON.parse(output);
   assert.equal(parsed.hookSpecificOutput.decision.behavior, "allow");
 
   approvalCallbackData = "";
   replied = false;
+  seedTelegramOrigin(yesNoCommandApprovalInput, "relay-yes-no");
   const yesNoOutput = await handlePermissionHook(yesNoCommandApprovalInput, { telegramApiFn });
   const yesNoParsed = JSON.parse(yesNoOutput);
   assert.equal(yesNoParsed.hookSpecificOutput.decision.behavior, "allow");
@@ -161,10 +186,12 @@ async function telegramApiFn(method, payload) {
   assert.equal(always.decision, "always_approved");
   approvalCallbackData = "";
   replied = false;
+  seedTelegramOrigin(hookInput);
   const alwaysOutput = await handlePermissionHook(hookInput, { telegramApiFn });
   const alwaysParsed = JSON.parse(alwaysOutput);
   assert.equal(alwaysParsed.hookSpecificOutput.decision.behavior, "allow");
   apiCalls.length = 0;
+  seedTelegramOrigin(hookInput);
   const cachedOutput = await handlePermissionHook(hookInput, { telegramApiFn });
   const cachedParsed = JSON.parse(cachedOutput);
   assert.equal(cachedParsed.hookSpecificOutput.decision.behavior, "allow");
@@ -176,6 +203,7 @@ async function telegramApiFn(method, payload) {
   approvalButtonIndex = 0;
   approvalCallbackData = "";
   replied = false;
+  seedTelegramOrigin(hookInput);
   process.env.CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS = "1000";
   const fallbackOutput = await handlePermissionHook(hookInput, {
     telegramApiFn,

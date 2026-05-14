@@ -9,6 +9,7 @@ const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-hook-insta
 const configFile = path.join(tempDir, "config.toml");
 process.env.CODEX_TELEGRAM_PERMISSION_HOOK_CONFIG_FILE = configFile;
 process.env.CODEX_TELEGRAM_PERMISSION_HOOK_COMMAND = "node hook.js";
+process.env.CODEX_TELEGRAM_STOP_HOOK_COMMAND = "node stop-hook.js";
 process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
 process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
@@ -20,6 +21,7 @@ const {
   maybeInstallPermissionHook,
   permissionHookScope,
   permissionHookStatus,
+  stopHookCommand,
   removeManagedHookBlock
 } = require("../src/hook-install.js");
 
@@ -52,7 +54,10 @@ assert.match(installed, /hooks = true/);
 assert.doesNotMatch(installed, /codex_hooks/);
 assert.match(installed, /\[\[hooks\.PermissionRequest]]/);
 assert.match(installed, /\[\[hooks\.PostToolUse]]/);
+assert.match(installed, /\[\[hooks\.Stop]]/);
 assert.match(installed, /node hook\.js/);
+assert.match(installed, /node stop-hook\.js/);
+assert.equal(stopHookCommand(), "node stop-hook.js");
 
 const second = ensurePermissionHookInstalled();
 assert.equal(second.installed, true);
@@ -74,6 +79,13 @@ const statefulBlock = [
   "[[hooks.PermissionRequest.hooks]]",
   'type = "command"',
   'command = "node hook.js"',
+  "",
+  "[[hooks.Stop]]",
+  'matcher = "*"',
+  "",
+  "[[hooks.Stop.hooks]]",
+  'type = "command"',
+  'command = "node stop-hook.js"',
   "",
   "[hooks.state]",
   "",

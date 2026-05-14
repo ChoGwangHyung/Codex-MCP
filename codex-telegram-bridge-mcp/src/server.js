@@ -11,7 +11,6 @@ const {
   allowedChatIds,
   bridgeEnabled,
   relayEnabled,
-  relayReplyRequired,
   telegramAccessPath,
   telegramConfigDir,
   telegramEnabled,
@@ -204,9 +203,9 @@ async function healthCheck() {
     `enabled: ${bridgeEnabled() ? "yes" : "no"}`,
     `allowed_chats: ${allowedChatIds().size}`,
     `codex_relay: ${relayEnabled() ? "enabled" : "disabled"}`,
-    `codex_relay_reply_required: ${relayReplyRequired() ? "yes" : "no"}`,
-    `permission_hook: ${hook.installed ? "installed" : "not installed"}`,
-    `permission_hook_config: ${hook.path}`
+    `codex_relay_auto_reply: stop_hook`,
+    `codex_hook: ${hook.installed ? "installed" : "not installed"}`,
+    `codex_hook_config: ${hook.path}`
   ].join("\n");
 }
 

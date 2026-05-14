@@ -17,7 +17,6 @@ const {
   relayEnabled,
   relayIgnoreExisting,
   relayMode,
-  relayReplyRequired,
   relayTargetCwd,
   relayTargetThreadId,
   telegramEnabled
@@ -45,6 +44,7 @@ let relayLastThreadId = "";
 let relayLastConsolePid = "";
 let relayEndpointCache = { value: "", resolvedAt: 0 };
 const RELAY_INJECTING_STALE_MS = 120000;
+const RELAY_PENDING_REPLY_MAX = 100;
 
 function startTelegramRelay() {
   if (relayStarted || !relayEnabled() || !telegramEnabled()) return;
@@ -182,6 +182,7 @@ async function processRelayClaim(claim) {
         current.relayConsolePid = relayLastConsolePid;
         current.relayTurnId = "";
       }
+      upsertPendingRelayReply(state, relayPendingReplyFromMessage(current));
       state.relay.lastThreadId = relayLastThreadId;
       state.relay.lastConsolePid = relayLastConsolePid;
       state.relay.lastInjectedAt = relayLastInjectedAt;
@@ -277,6 +278,9 @@ async function telegramRelayStatus() {
   startTelegramRelay();
   const state = readTelegramState();
   const counts = new Map();
+  const pendingReplyCount = Array.isArray(state.relay && state.relay.pendingReplies)
+    ? state.relay.pendingReplies.filter((reply) => reply && String(reply.status || "pending") !== "sent").length
+    : 0;
   for (const message of state.inbox) {
     const key = message.relayStatus || "pending";
     counts.set(key, (counts.get(key) || 0) + 1);
@@ -286,7 +290,8 @@ async function telegramRelayStatus() {
     `mode: ${relayMode()}`,
     `started: ${relayStarted ? "yes" : "no"}`,
     `running: ${relayRunning || relayInFlight ? "yes" : "no"}`,
-    `reply_required: ${relayReplyRequired() ? "yes" : "no"}`,
+    `auto_reply: stop_hook`,
+    `pending_replies: ${pendingReplyCount}`,
     `target_cwd: ${relayTargetCwd()}`,
     `target_thread_id: ${relayTargetThreadId() || relayLastThreadId || "auto"}`,
     `target_console_pid: ${relayConsolePid() || relayLastConsolePid || state.relay && state.relay.lastConsolePid || "auto"}`,
@@ -424,16 +429,13 @@ function formatRelayPrompt(message) {
   const text = sanitize(message.text);
   return [
     `[Telegram chatId ${message.chatId}]`,
-    text,
-    ...relayReplyInstructionLines(message)
+    text
   ].filter((line) => line !== "").join("\n");
 }
 
 function formatConsoleRelayPrompt(message) {
   const text = flattenConsoleRelayText(message.text);
-  const prompt = `[Telegram chatId ${message.chatId}] ${text}`.trim();
-  const instruction = relayReplyInstructionLine(message);
-  return instruction ? `${prompt} ${instruction}`.trim() : prompt;
+  return `[Telegram chatId ${message.chatId}] ${text}`.trim();
 }
 
 function formatAppServerRelayInput(message) {
@@ -477,9 +479,34 @@ function relayReplyInstructionLines(message) {
   return instruction ? ["", instruction] : [];
 }
 
-function relayReplyInstructionLine(message) {
-  if (!relayReplyRequired()) return "";
-  return `Required: after completing this Telegram-origin request, call telegram_send with chatId ${message.chatId} and a concise result.`;
+function relayReplyInstructionLine() {
+  return "";
+}
+
+function relayPendingReplyFromMessage(message) {
+  return {
+    id: String(message.id),
+    inboxMessageId: String(message.id),
+    chatId: String(message.chatId),
+    telegramMessageId: Number(message.messageId || 0),
+    mode: String(message.relayMode || ""),
+    threadId: String(message.relayThreadId || ""),
+    turnId: String(message.relayTurnId || ""),
+    consolePid: String(message.relayConsolePid || ""),
+    cwd: relayTargetCwd(),
+    deliveredAt: String(message.relayDeliveredAt || new Date().toISOString()),
+    status: "pending"
+  };
+}
+
+function upsertPendingRelayReply(state, entry) {
+  if (!state.relay || typeof state.relay !== "object") state.relay = {};
+  const existing = Array.isArray(state.relay.pendingReplies) ? state.relay.pendingReplies : [];
+  const next = existing.filter((item) => {
+    return item && item.id !== entry.id && item.inboxMessageId !== entry.inboxMessageId;
+  });
+  next.push(entry);
+  state.relay.pendingReplies = next.slice(-RELAY_PENDING_REPLY_MAX);
 }
 
 async function resolveAppServerEndpoint() {

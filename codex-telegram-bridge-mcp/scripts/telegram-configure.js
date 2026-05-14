@@ -15,6 +15,7 @@ const ACCESS_FILE = resolveAccessFile();
 const DISPLAY_COMMAND = process.env.CODEX_TELEGRAM_CONFIGURE_COMMAND ||
   `node ${quoteForDisplay(__filename)}`;
 const PERMISSION_HOOK_SCRIPT = path.join(__dirname, "codex-permission-telegram.js");
+const STOP_HOOK_SCRIPT = path.join(__dirname, "codex-stop-telegram.js");
 const PAIRING_TTL_MS = normalizePairingTtl(process.env.CODEX_TELEGRAM_PAIRING_TTL_MS);
 
 const [command, ...rest] = process.argv.slice(2);
@@ -451,6 +452,7 @@ function commandExample(args) {
 
 function printPermissionHookSnippet() {
   const hookCommand = `node ${quoteForShell(PERMISSION_HOOK_SCRIPT)}`;
+  const stopHookCommand = `node ${quoteForShell(STOP_HOOK_SCRIPT)}`;
   console.log([
     "[features]",
     "hooks = true",
@@ -471,7 +473,16 @@ function printPermissionHookSnippet() {
     'type = "command"',
     `command = ${JSON.stringify(hookCommand)}`,
     "timeout = 30",
-    'statusMessage = "Updating Telegram approval state"'
+    'statusMessage = "Updating Telegram approval state"',
+    "",
+    "[[hooks.Stop]]",
+    'matcher = "*"',
+    "",
+    "[[hooks.Stop.hooks]]",
+    'type = "command"',
+    `command = ${JSON.stringify(stopHookCommand)}`,
+    "timeout = 30",
+    'statusMessage = "Sending Telegram reply"'
   ].join("\n"));
 }
 
