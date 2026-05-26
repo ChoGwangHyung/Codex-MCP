@@ -1,7 +1,7 @@
 "use strict";
 
 const SERVER_NAME = "codex-telegram-bridge-mcp";
-const SERVER_VERSION = "1.0.2";
+const SERVER_VERSION = "1.0.4";
 const DEFAULT_TELEGRAM_TIMEOUT_MS = 120000;
 const PROJECT_ENV_FILE = "config.toml.env";
 const PROJECT_ACCESS_FILE = "config.toml.access.json";
@@ -10,6 +10,7 @@ const DEFAULT_MONITOR_BACKOFF_MS = 5000;
 const DEFAULT_INBOX_MAX_MESSAGES = 200;
 const DEFAULT_DOWNLOAD_MAX_BYTES = 20 * 1024 * 1024;
 const DEFAULT_APPROVAL_TIMEOUT_MS = 300000;
+const DEFAULT_RELAY_PENDING_REPLY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_APP_SERVER_TIMEOUT_MS = 10000;
 const APP_SERVER_ENDPOINT_CACHE_MS = 30000;
 const APPROVE_TOKENS = new Set(["approve", "approved", "allow", "yes", "y", "ok", "okay", "허용", "승인", "예", "네", "ㅇ"]);
@@ -26,6 +27,7 @@ module.exports = {
   DEFAULT_INBOX_MAX_MESSAGES,
   DEFAULT_DOWNLOAD_MAX_BYTES,
   DEFAULT_APPROVAL_TIMEOUT_MS,
+  DEFAULT_RELAY_PENDING_REPLY_TTL_MS,
   DEFAULT_APP_SERVER_TIMEOUT_MS,
   APP_SERVER_ENDPOINT_CACHE_MS,
   APPROVE_TOKENS,

@@ -45,6 +45,9 @@ server to manage the user-level hook. The companion `PostToolUse` hook can mark
 Telegram-origin requests as approved after CLI fallback approval, but CLI denial
 is not observable because the tool does not run. The companion `Stop` hook sends
 final replies only for pending Telegram-origin turns.
+Pending relay replies expire after `CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS`
+milliseconds, defaulting to 24 hours, to prevent stale console relay state from
+causing later CLI-origin turns to be treated as Telegram-origin.
 
 ## Agentic Bridges
 

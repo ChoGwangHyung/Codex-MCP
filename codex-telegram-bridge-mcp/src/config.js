@@ -9,7 +9,8 @@ const {
   DEFAULT_MONITOR_POLL_TIMEOUT_SEC,
   DEFAULT_MONITOR_BACKOFF_MS,
   DEFAULT_INBOX_MAX_MESSAGES,
-  DEFAULT_DOWNLOAD_MAX_BYTES
+  DEFAULT_DOWNLOAD_MAX_BYTES,
+  DEFAULT_RELAY_PENDING_REPLY_TTL_MS
 } = require("./constants.js");
 const { normalizeInteger, normalizePath } = require("./util.js");
 
@@ -58,6 +59,15 @@ function relayConsolePid() {
 
 function relayConsoleSubmitDelayMs() {
   return normalizeInteger(process.env.CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS, 150, 0, 5000);
+}
+
+function relayPendingReplyTtlMs() {
+  return normalizeInteger(
+    process.env.CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS,
+    DEFAULT_RELAY_PENDING_REPLY_TTL_MS,
+    60000,
+    7 * 24 * 60 * 60 * 1000
+  );
 }
 
 function relayReplyRequired() {
@@ -228,6 +238,7 @@ module.exports = {
   relayTargetCwd,
   relayConsolePid,
   relayConsoleSubmitDelayMs,
+  relayPendingReplyTtlMs,
   relayReplyRequired,
   telegramEnabled,
   allowedChatIds,

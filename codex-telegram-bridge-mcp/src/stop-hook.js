@@ -76,6 +76,9 @@ async function markPendingReply(id, status, fields) {
     const reply = replies.find((item) => item && item.id === id);
     if (!reply) return;
     Object.assign(reply, fields || {}, { status });
+    if (status === "sent") {
+      markOlderPendingRepliesSuperseded(state, reply, fields.replySentAt);
+    }
     updateInboxReplyState(state, reply, {
       relayReplyStatus: status,
       relayReplySentAt: status === "sent" ? fields.replySentAt : "",
@@ -84,6 +87,36 @@ async function markPendingReply(id, status, fields) {
     });
     writeTelegramState(state);
   });
+}
+
+function markOlderPendingRepliesSuperseded(state, reply, supersededAt) {
+  const relay = state.relay && typeof state.relay === "object" ? state.relay : {};
+  const replies = Array.isArray(relay.pendingReplies) ? relay.pendingReplies : [];
+  const replyTime = Date.parse(reply.deliveredAt || "");
+  for (const candidate of replies) {
+    if (!candidate || candidate.id === reply.id) continue;
+    if (String(candidate.status || "pending") !== "pending") continue;
+    if (!sameRelayThread(candidate, reply)) continue;
+    const candidateTime = Date.parse(candidate.deliveredAt || "");
+    if (Number.isFinite(replyTime) && Number.isFinite(candidateTime) && candidateTime > replyTime) continue;
+    candidate.status = "superseded";
+    candidate.replySupersededAt = supersededAt || new Date().toISOString();
+    candidate.replySupersededBy = reply.id;
+    updateInboxReplyState(state, candidate, {
+      relayReplyStatus: "superseded",
+      relayReplySupersededAt: candidate.replySupersededAt,
+      relayReplySupersededBy: reply.id
+    });
+  }
+}
+
+function sameRelayThread(left, right) {
+  const leftTurn = String(left.turnId || "");
+  const rightTurn = String(right.turnId || "");
+  if (leftTurn && rightTurn) return leftTurn === rightTurn;
+  const leftThread = String(left.threadId || "");
+  const rightThread = String(right.threadId || "");
+  return Boolean(leftThread && rightThread && leftThread === rightThread);
 }
 
 function updateInboxReplyState(state, reply, fields) {

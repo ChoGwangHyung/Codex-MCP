@@ -1,6 +1,7 @@
 "use strict";
 
 const { readTelegramState } = require("./state.js");
+const { relayPendingReplyTtlMs } = require("./config.js");
 const { normalizePath } = require("./util.js");
 
 const SENDING_STALE_MS = 5 * 60 * 1000;
@@ -16,8 +17,8 @@ function findTelegramOriginReply(input, options = {}) {
   return selectTelegramOriginReply(replies, input);
 }
 
-function selectTelegramOriginReply(replies, input) {
-  const active = (Array.isArray(replies) ? replies : []).filter(isActiveRelayReply);
+function selectTelegramOriginReply(replies, input, options = {}) {
+  const active = (Array.isArray(replies) ? replies : []).filter((reply) => isActiveRelayReply(reply, options));
   const turnId = hookTurnId(input);
   const sessionId = hookSessionId(input);
 
@@ -26,13 +27,23 @@ function selectTelegramOriginReply(replies, input) {
     null;
 }
 
-function isActiveRelayReply(reply) {
+function isActiveRelayReply(reply, options = {}) {
   if (!reply || !reply.id || !reply.chatId) return false;
+  if (isRelayReplyExpired(reply, options)) return false;
   const status = String(reply.status || "pending");
   if (status === "pending") return true;
   if (status !== "sending") return false;
   const startedAt = Date.parse(reply.replyStartedAt || "");
-  return !Number.isFinite(startedAt) || Date.now() - startedAt > SENDING_STALE_MS;
+  const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+  return !Number.isFinite(startedAt) || now - startedAt > SENDING_STALE_MS;
+}
+
+function isRelayReplyExpired(reply, options = {}) {
+  const deliveredAt = Date.parse(reply && reply.deliveredAt || "");
+  if (!Number.isFinite(deliveredAt)) return true;
+  const ttlMs = Number.isFinite(Number(options.ttlMs)) ? Number(options.ttlMs) : relayPendingReplyTtlMs();
+  const now = Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now();
+  return now - deliveredAt > ttlMs;
 }
 
 function latest(replies) {
@@ -62,6 +73,8 @@ module.exports = {
   hookCwd,
   hookSessionId,
   hookTurnId,
+  isActiveRelayReply,
+  isRelayReplyExpired,
   isTelegramOriginHookInput,
   selectTelegramOriginReply
 };

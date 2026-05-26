@@ -16,8 +16,17 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
 
 (async () => {
   const deliveredAt = new Date().toISOString();
+  const oldDeliveredAt = new Date(Date.now() - 1000).toISOString();
   writeTelegramState({
     inbox: [
+      {
+        id: "old-update",
+        chatId: "12345",
+        text: "이전 요청",
+        relayStatus: "delivered",
+        relayThreadId: "session-1",
+        relayDeliveredAt: oldDeliveredAt
+      },
       {
         id: "update-1",
         chatId: "12345",
@@ -30,6 +39,16 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
     ],
     relay: {
       pendingReplies: [
+        {
+          id: "old-update",
+          inboxMessageId: "old-update",
+          chatId: "12345",
+          threadId: "session-1",
+          turnId: "",
+          cwd: "D:/Projects/TalkLog",
+          deliveredAt: oldDeliveredAt,
+          status: "pending"
+        },
         {
           id: "update-1",
           inboxMessageId: "update-1",
@@ -66,9 +85,11 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
   ]);
 
   let state = readTelegramState();
-  assert.equal(state.relay.pendingReplies[0].status, "sent");
-  assert.equal(state.inbox[0].relayReplyStatus, "sent");
-  assert.ok(state.inbox[0].relayReplySentAt);
+  assert.equal(state.relay.pendingReplies.find((reply) => reply.id === "update-1").status, "sent");
+  assert.equal(state.relay.pendingReplies.find((reply) => reply.id === "old-update").status, "superseded");
+  assert.equal(state.inbox.find((message) => message.id === "update-1").relayReplyStatus, "sent");
+  assert.ok(state.inbox.find((message) => message.id === "update-1").relayReplySentAt);
+  assert.equal(state.inbox.find((message) => message.id === "old-update").relayReplyStatus, "superseded");
 
   const duplicate = await handleStopHook({
     hook_event_name: "Stop",
@@ -84,26 +105,34 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
   assert.equal(duplicate.sent, false);
   assert.equal(sent.length, 1);
 
+  const now = Date.now();
   assert.equal(selectPendingReply([
-    { id: "old", chatId: "12345", threadId: "session-2", cwd: "d:/projects/talklog", deliveredAt: "2026-01-01T00:00:00.000Z", status: "pending" },
-    { id: "new", chatId: "12345", threadId: "session-2", cwd: "d:/projects/talklog", deliveredAt: "2026-01-02T00:00:00.000Z", status: "pending" }
+    { id: "old", chatId: "12345", threadId: "session-2", cwd: "d:/projects/talklog", deliveredAt: new Date(now - 2000).toISOString(), status: "pending" },
+    { id: "new", chatId: "12345", threadId: "session-2", cwd: "d:/projects/talklog", deliveredAt: new Date(now - 1000).toISOString(), status: "pending" }
   ], {
     hook_event_name: "Stop",
     session_id: "session-2",
     cwd: "D:/Projects/TalkLog"
-  }).id, "new");
+  }, { now, ttlMs: 60000 }).id, "new");
   assert.equal(selectPendingReply([
-    { id: "cwd-only", chatId: "12345", cwd: "d:/projects/talklog", deliveredAt: "2026-01-02T00:00:00.000Z", status: "pending" }
+    { id: "expired", chatId: "12345", threadId: "session-2", cwd: "d:/projects/talklog", deliveredAt: new Date(now - 120000).toISOString(), status: "pending" }
+  ], {
+    hook_event_name: "Stop",
+    session_id: "session-2",
+    cwd: "D:/Projects/TalkLog"
+  }, { now, ttlMs: 60000 }), null);
+  assert.equal(selectPendingReply([
+    { id: "cwd-only", chatId: "12345", cwd: "d:/projects/talklog", deliveredAt: new Date(now - 1000).toISOString(), status: "pending" }
   ], {
     hook_event_name: "Stop",
     session_id: "cli-session",
     cwd: "D:/Projects/TalkLog"
-  }), null);
+  }, { now, ttlMs: 60000 }), null);
 
   assert.deepEqual(telegramTextChunks("x".repeat(4000)).map((chunk) => chunk.length), [3900, 100]);
 
   state = readTelegramState();
-  assert.equal(state.relay.pendingReplies.length, 1);
+  assert.equal(state.relay.pendingReplies.length, 2);
 })().catch((error) => {
   console.error(error);
   process.exit(1);

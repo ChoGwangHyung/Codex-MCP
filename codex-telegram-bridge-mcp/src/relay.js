@@ -26,6 +26,7 @@ const {
   writeTelegramState,
   withTelegramStateLock
 } = require("./state.js");
+const { isActiveRelayReply } = require("./relay-origin.js");
 const {
   execFileText,
   normalizePath,
@@ -279,7 +280,7 @@ async function telegramRelayStatus() {
   const state = readTelegramState();
   const counts = new Map();
   const pendingReplyCount = Array.isArray(state.relay && state.relay.pendingReplies)
-    ? state.relay.pendingReplies.filter((reply) => reply && String(reply.status || "pending") !== "sent").length
+    ? state.relay.pendingReplies.filter((reply) => isActiveRelayReply(reply)).length
     : 0;
   for (const message of state.inbox) {
     const key = message.relayStatus || "pending";

@@ -92,6 +92,8 @@ TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
+# stale relay reply 방지 설정. 기본값은 24시간입니다.
+# CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
 # 선택 inbound media download 설정:
 # CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR=<ProjectRoot>/.codex/telegram-runtime/downloads
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
@@ -323,6 +325,11 @@ image attachment를 native `localImage` 입력으로도 함께 전달합니다. 
 request가 relay되면 bridge는 runtime state에 pending reply를 기록하고, bundled
 `Stop` hook이 완료된 turn과 매칭해 최종 assistant 메시지를 Telegram으로 다시
 보냅니다.
+pending relay reply는 `CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS` 밀리초 뒤에
+만료되며 기본값은 24시간입니다. 그래서 오래된 console relay state가 이후
+CLI-origin turn을 계속 Telegram-origin으로 오판하지 않습니다. 같은 console
+session에서 더 최신 reply가 전송되면 더 오래된 pending reply는 `superseded`로
+정리됩니다.
 
 relay 상태 확인:
 

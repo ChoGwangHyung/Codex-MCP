@@ -92,6 +92,8 @@ TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
+# Optional stale relay reply guard; default is 24 hours.
+# CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
 # Optional inbound media download settings:
 # CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR=<ProjectRoot>/.codex/telegram-runtime/downloads
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
@@ -324,6 +326,11 @@ reliable; the full metadata remains in the inbox attachment object. In
 `localImage` inputs. When a relayed Telegram request is delivered, the bridge
 records a pending reply in the runtime state. The bundled `Stop` hook matches
 the completed turn and sends Codex's final assistant message back to Telegram.
+Pending relay replies expire after `CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS`
+milliseconds, defaulting to 24 hours, so stale console relay state cannot keep
+future CLI-origin turns classified as Telegram-origin forever. When a newer
+reply is sent for the same console session, older pending replies in that
+session are marked `superseded`.
 
 Check relay state:
 
