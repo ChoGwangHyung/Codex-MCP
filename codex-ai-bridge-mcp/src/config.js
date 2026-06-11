@@ -130,6 +130,17 @@ function validatePreset(preset) {
   return preset;
 }
 
+function defaultModelForProvider(provider, reviewPreset) {
+  if (provider === "claude") {
+    return reviewPreset
+      ? (process.env.CODEX_AI_BRIDGE_CLAUDE_MODEL || "claude-fable-5")
+      : process.env.CODEX_AI_BRIDGE_CLAUDE_MODEL;
+  }
+  if (provider === "gemini") return process.env.CODEX_AI_BRIDGE_GEMINI_MODEL;
+  if (provider === "antigravity") return process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL;
+  return undefined;
+}
+
 function validateTaskArgs(args, options = {}) {
   if (!args || typeof args !== "object") throw new Error("arguments object is required");
   if (typeof args.prompt !== "string" || !args.prompt.trim()) throw new Error("prompt is required");
@@ -147,7 +158,7 @@ function validateTaskArgs(args, options = {}) {
     role: ROLES.has(args.role) ? args.role : (reviewPreset ? "reviewer" : DEFAULT_ROLE),
     policy,
     cwd: resolveCwd(args.cwd),
-    model: validateModel(args.model || (reviewPreset && options.provider === "claude" ? "opus" : undefined)),
+    model: validateModel(args.model || defaultModelForProvider(options.provider, reviewPreset)),
     effort: validateEffort(args.effort || (reviewPreset && options.provider === "claude" ? "max" : undefined)),
     maxTurns: validateMaxTurns(args.maxTurns !== undefined && args.maxTurns !== null && args.maxTurns !== "" ? args.maxTurns : reviewMaxTurns),
     timeoutMs: timing.timeoutMs,

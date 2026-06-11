@@ -1,7 +1,7 @@
 "use strict";
 
 const SERVER_NAME = "codex-ai-bridge-mcp";
-const SERVER_VERSION = "1.0.1";
+const SERVER_VERSION = "1.1.0";
 const MIN_TASK_TIMEOUT_MS = 0;
 const MIN_HEALTH_TIMEOUT_MS = 1000;
 const MAX_HEALTH_TIMEOUT_MS = 60000;
@@ -21,7 +21,7 @@ const ROLES = new Set(["planner", "reviewer", "security", "qa", "architecture", 
 const POLICIES = new Set(["advisory", "workspace-read", "agentic"]);
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const PRESETS = new Set(["review"]);
-const MODEL_RE = /^[A-Za-z0-9._:-]{1,100}$/;
+const MODEL_RE = /^[A-Za-z0-9._:/() -]{1,120}$/;
 
 function parseDefaultTimeout(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;

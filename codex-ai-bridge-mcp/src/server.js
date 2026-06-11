@@ -23,20 +23,21 @@ const { sanitize } = require("./util.js");
 const tools = [
   tool("claude_task", "Ask Claude Code for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeEffort: true, includeMaxTurns: true })),
   tool("gemini_task", "Ask Gemini CLI for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeMaxTurns: true })),
-  tool("cross_review", "Ask Claude and Gemini in parallel and return both responses.", {
+  tool("antigravity_task", "Ask Antigravity CLI for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeMaxTurns: true })),
+  tool("cross_review", "Ask Claude, Gemini, or Antigravity in parallel and return the selected responses.", {
     ...taskSchema({ includeMaxTurns: true }).properties,
     providers: {
       type: "array",
-      items: { type: "string", enum: ["claude", "gemini"] },
+      items: { type: "string", enum: ["claude", "gemini", "antigravity"] },
       minItems: 1,
       uniqueItems: true,
       default: ["claude", "gemini"]
     }
   }),
-  tool("ai_bridge_job", "Poll a background AI bridge job returned by claude_task, gemini_task, or cross_review.", {
+  tool("ai_bridge_job", "Poll a background AI bridge job returned by claude_task, gemini_task, antigravity_task, or cross_review.", {
     jobId: { type: "string", minLength: 1 }
   }, ["jobId"]),
-  tool("ai_bridge_health", "Check whether Claude and Gemini CLIs are available.", {
+  tool("ai_bridge_health", "Check whether Claude, Gemini, and Antigravity CLIs are available.", {
     timeoutMs: { type: "integer", minimum: MIN_HEALTH_TIMEOUT_MS, maximum: MAX_HEALTH_TIMEOUT_MS, default: 10000 }
   }, [])
 ];
@@ -48,7 +49,7 @@ function taskSchema(options = {}) {
     preset: {
       type: "string",
       enum: ["review"],
-      description: "review applies Claude opus/max defaults and a 15 minute hard timeout unless overridden."
+      description: "review applies Claude Fable 5/max defaults and a 15 minute hard timeout unless overridden."
     },
     role: { type: "string", enum: [...ROLES], default: DEFAULT_ROLE },
     policy: {
@@ -58,7 +59,10 @@ function taskSchema(options = {}) {
       description: "advisory is default. agentic requires CODEX_AI_BRIDGE_ALLOW_AGENTIC=1."
     },
     cwd: { type: "string", description: "Working directory under CODEX_AI_BRIDGE_ROOT." },
-    model: { type: "string" },
+    model: {
+      type: "string",
+      description: "Provider model override. Claude uses model plus Claude-only effort. Gemini uses model only. Antigravity uses exact agy model labels, such as Gemini 3.5 Flash (High), Gemini 3.5 Flash (Medium), Gemini 3.5 Flash (Low), Gemini 3.1 Pro (High), Gemini 3.1 Pro (Low), or Claude Opus 4.6 (Thinking), because it has no separate effort/reasoning flag."
+    },
     timeoutMs: {
       type: "integer",
       minimum: MIN_TASK_TIMEOUT_MS,
@@ -83,7 +87,7 @@ function taskSchema(options = {}) {
     properties.effort = {
       type: "string",
       enum: [...EFFORTS],
-      description: "Claude-only effort level."
+      description: "Claude-only reasoning effort level: low, medium, high, xhigh, or max. Gemini and Antigravity do not accept effort."
     };
   }
   if (options.includeMaxTurns) {
@@ -91,7 +95,7 @@ function taskSchema(options = {}) {
       type: "integer",
       minimum: 1,
       maximum: MAX_PROVIDER_MAX_TURNS,
-      description: "Provider turn limit for this call where supported. Claude uses --max-turns; current Gemini CLI does not expose an equivalent flag."
+      description: "Provider turn limit for this call where supported. Claude uses --max-turns; current Gemini and Antigravity CLIs do not expose an equivalent flag."
     };
   }
   return {
@@ -128,13 +132,14 @@ function textResult(text, isError = false) {
 async function callTool(name, args, context = {}) {
   if (name === "claude_task") return textResult(await askProvider("claude", args, context));
   if (name === "gemini_task") return textResult(await askProvider("gemini", args, context));
+  if (name === "antigravity_task") return textResult(await askProvider("antigravity", args, context));
   if (name === "cross_review") {
     if (args && Object.prototype.hasOwnProperty.call(args, "effort")) {
       throw new Error("cross_review does not support effort. Use claude_task for Claude effort control.");
     }
     const providers = Array.isArray(args && args.providers) && args.providers.length ? args.providers : ["claude", "gemini"];
-    const unique = [...new Set(providers)].filter((provider) => provider === "claude" || provider === "gemini");
-    if (unique.length === 0) throw new Error("providers must include claude or gemini");
+    const unique = [...new Set(providers)].filter((provider) => provider === "claude" || provider === "gemini" || provider === "antigravity");
+    if (unique.length === 0) throw new Error("providers must include claude, gemini, or antigravity");
     const results = await Promise.all(unique.map((provider) => askProvider(provider, args, context)));
     return textResult(results.join("\n\n---\n\n"));
   }

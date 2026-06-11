@@ -10,7 +10,7 @@ Korean documentation: [README.ko.md](README.ko.md)
 
 | Package | Description |
 | --- | --- |
-| `@chogwanghyung/codex-ai-bridge-mcp` | Calls Claude Code and Gemini CLI for bounded planning, review, QA, architecture, security, or implementation advice. |
+| `@chogwanghyung/codex-ai-bridge-mcp` | Calls Claude Code, Gemini CLI, and Antigravity CLI for bounded planning, review, QA, architecture, security, or implementation advice. |
 | `@chogwanghyung/codex-telegram-bridge-mcp` | Sends and receives Telegram messages and files through allowlisted chats, supports workflow approvals, auto-installs a user-level hook for native Codex permission approvals, and can relay Telegram messages into an active Codex session. |
 | `@chogwanghyung/codex-done-notifier` | Local Codex `Stop` hook that plays a sound and shows a desktop notification when selected Codex sessions finish. |
 

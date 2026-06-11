@@ -1,7 +1,7 @@
 {
   "name": "@chogwanghyung/codex-ai-bridge-mcp",
-  "version": "1.0.1",
-  "description": "MCP bridge for Codex to ask Claude and Gemini for planning, review, QA, and implementation advice.",
+  "version": "1.1.0",
+  "description": "MCP bridge for Codex to ask Claude, Gemini, and Antigravity for planning, review, QA, and implementation advice.",
   "bin": {
     "codex-ai-bridge-mcp": "src/index.js"
   },
@@ -34,6 +34,7 @@
     "mcp",
     "claude",
     "gemini",
+    "antigravity",
     "review",
     "automation"
   ],

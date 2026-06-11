@@ -1,5 +1,9 @@
 "use strict";
 
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const {
   MAX_HEALTH_TIMEOUT_MS,
   MIN_HEALTH_TIMEOUT_MS,
@@ -48,7 +52,6 @@ function providerCommand(provider, args) {
       commandArgs.push(
         "--disallowedTools", "Edit",
         "--disallowedTools", "Write",
-        "--disallowedTools", "MultiEdit",
         "--disallowedTools", "NotebookEdit",
         "--disallowedTools", "Bash"
       );
@@ -61,17 +64,69 @@ function providerCommand(provider, args) {
     };
   }
 
-  const approvalMode = args.policy === "agentic"
-    ? (process.env.CODEX_AI_BRIDGE_GEMINI_APPROVAL_MODE || "default")
-    : "plan";
-  const commandArgs = ["-p", PROMPT_ARG, `--approval-mode=${approvalMode}`, "--output-format", "text"];
-  if (process.env.CODEX_AI_BRIDGE_GEMINI_SANDBOX === "1") {
-    commandArgs.push("--sandbox");
+  if (provider === "gemini") {
+    const model = validateModel(args.model || process.env.CODEX_AI_BRIDGE_GEMINI_MODEL);
+    const approvalMode = args.policy === "agentic"
+      ? (process.env.CODEX_AI_BRIDGE_GEMINI_APPROVAL_MODE || "default")
+      : "plan";
+    const commandArgs = ["-p", PROMPT_ARG, `--approval-mode=${approvalMode}`, "--output-format", "text"];
+    if (process.env.CODEX_AI_BRIDGE_GEMINI_SANDBOX === "1") {
+      commandArgs.push("--sandbox");
+    }
+    if (model) commandArgs.push("--model", model);
+    return {
+      command: process.env.GEMINI_COMMAND || process.env.CODEX_AI_BRIDGE_GEMINI_COMMAND || "gemini",
+      args: commandArgs.concat(envJsonArray("CODEX_AI_BRIDGE_GEMINI_ARGS_JSON"))
+    };
   }
-  if (args.model) commandArgs.push("--model", args.model);
+
+  if (provider === "antigravity") {
+    const model = validateModel(args.model || process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL);
+    const logFile = antigravityLogFile();
+    const capture = antigravityCapture();
+    const commandArgs = ["--log-file", logFile, "-p", "-", "--print-timeout", antigravityPrintTimeout(args)];
+    if (antigravitySandboxEnabled(args)) {
+      commandArgs.push("--sandbox");
+    }
+    if (args.policy === "agentic" && process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_DANGEROUS_SKIP_PERMISSIONS === "1") {
+      commandArgs.push("--dangerously-skip-permissions");
+    }
+    if (model) commandArgs.push("--model", model);
+    return {
+      command: process.env.AGY_COMMAND || process.env.ANTIGRAVITY_COMMAND || process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_COMMAND || "agy",
+      args: commandArgs.concat(envJsonArray("CODEX_AI_BRIDGE_ANTIGRAVITY_ARGS_JSON")),
+      logFile,
+      capture,
+      emptyOutputIsFailure: true
+    };
+  }
+
+  throw new Error(`unsupported provider: ${provider}`);
+}
+
+function antigravityPrintTimeout(args) {
+  const configured = process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_PRINT_TIMEOUT;
+  if (configured) return configured;
+  if (args.timeoutMs > 0) return `${Math.max(1, Math.ceil(args.timeoutMs / 1000))}s`;
+  return "15m";
+}
+
+function antigravitySandboxEnabled(args) {
+  const configured = process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_SANDBOX;
+  if (configured === "1") return true;
+  if (configured === "0") return false;
+  return args.policy !== "agentic";
+}
+
+function antigravityLogFile() {
+  return path.join(os.tmpdir(), `codex-ai-bridge-antigravity-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.log`);
+}
+
+function antigravityCapture() {
+  const id = `${Date.now().toString(36)}${crypto.randomBytes(5).toString("hex")}`;
   return {
-    command: process.env.GEMINI_COMMAND || process.env.CODEX_AI_BRIDGE_GEMINI_COMMAND || "gemini",
-    args: commandArgs.concat(envJsonArray("CODEX_AI_BRIDGE_GEMINI_ARGS_JSON"))
+    begin: `CODEX_AI_BRIDGE_RESULT_${id}_BEGIN`,
+    end: `CODEX_AI_BRIDGE_RESULT_${id}_END`
   };
 }
 
@@ -101,15 +156,28 @@ function reportProgress(context, job) {
 }
 
 async function runProvider(provider, args, prompt, command, job) {
+  const providerPrompt = command.capture ? wrapCapturedPrompt(prompt, command.capture) : prompt;
   const result = await withProviderLock(provider, args.timeoutMs, () => runCommand(command.command, command.args, {
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
-    input: prompt,
+    input: providerPrompt,
     onStart: (details) => markJobChecked(job, details)
   }), { scope: args.cwd });
-  const output = sanitize(result.stdout);
-  if (result.ok) return `${provider} result:\n${output || "(no output)"}`;
-  return formatProviderFailure(provider, args, result, command);
+  const stdoutOutput = sanitize(unwrapCapturedOutput(result.stdout, command.capture));
+  const recoveredOutput = !stdoutOutput && command.capture
+    ? sanitize(recoverCapturedAntigravityOutput(command))
+    : "";
+  const output = stdoutOutput || recoveredOutput;
+  if (result.ok && (!command.emptyOutputIsFailure || output)) {
+    cleanupProviderCommand(command);
+    return `${provider} result:\n${output || "(no output)"}`;
+  }
+  const failureResult = result.ok && command.emptyOutputIsFailure
+    ? { ...result, ok: false, error: "completed without stdout" }
+    : result;
+  const failure = formatProviderFailure(provider, args, failureResult, command);
+  cleanupProviderCommand(command);
+  return failure;
 }
 
 function formatProviderFailure(provider, args, result, command) {
@@ -118,6 +186,7 @@ function formatProviderFailure(provider, args, result, command) {
     : result.error || `exited with code ${result.exitCode}`;
   const stdout = tailOutput(result.stdout);
   const stderr = tailOutput(result.stderr);
+  const providerLog = tailOutput(readProviderLog(command && command.logFile));
   return [
     `${provider} failed: ${reason}`,
     `cwd: ${sanitize(args.cwd)}`,
@@ -127,8 +196,93 @@ function formatProviderFailure(provider, args, result, command) {
     `elapsedMs: ${Number.isInteger(result.elapsedMs) ? result.elapsedMs : "unknown"}`,
     Number.isInteger(result.exitCode) ? `exitCode: ${result.exitCode}` : null,
     stdout ? `stdout partial:\n${stdout}` : "stdout partial: (empty)",
-    stderr ? `stderr partial:\n${stderr}` : "stderr partial: (empty)"
+    stderr ? `stderr partial:\n${stderr}` : "stderr partial: (empty)",
+    providerLog ? `provider log partial:\n${providerLog}` : null
   ].filter(Boolean).join("\n");
+}
+
+function wrapCapturedPrompt(prompt, capture) {
+  return [
+    prompt,
+    "",
+    "Antigravity print-mode constraint:",
+    "Do not use tools, shell commands, grep/search, workspace file reads, browser actions, MCP calls, or subagents.",
+    "Answer only from the task and context supplied in this prompt.",
+    "",
+    "Capture requirement:",
+    `Start your final answer with this exact line: ${capture.begin}`,
+    `End your final answer with this exact line: ${capture.end}`,
+    "Do not include either capture line anywhere else."
+  ].join("\n");
+}
+
+function unwrapCapturedOutput(text, capture) {
+  if (!capture) return text || "";
+  const clean = text || "";
+  const matches = [];
+  let searchIndex = 0;
+  while (searchIndex < clean.length) {
+    const beginIndex = clean.indexOf(capture.begin, searchIndex);
+    if (beginIndex < 0) break;
+    const contentStart = beginIndex + capture.begin.length;
+    const endIndex = clean.indexOf(capture.end, contentStart);
+    if (endIndex < 0) break;
+    const content = clean.slice(contentStart, endIndex).trim();
+    if (isCapturedProviderAnswer(content)) matches.push(content);
+    searchIndex = endIndex + capture.end.length;
+  }
+  return matches.length ? matches[matches.length - 1] : "";
+}
+
+function isCapturedProviderAnswer(content) {
+  if (!content) return false;
+  if (/^(start|end) your final answer with this exact line:?/i.test(content)) return false;
+  if (/capture requirement/i.test(content)) return false;
+  return true;
+}
+
+function recoverCapturedAntigravityOutput(command) {
+  const log = readProviderLog(command && command.logFile);
+  const conversationId = latestAntigravityConversationId(log);
+  if (!conversationId || !command || !command.capture) return "";
+  const dbPath = path.join(os.homedir(), ".gemini", "antigravity-cli", "conversations", `${conversationId}.db`);
+  let text = "";
+  try {
+    text = fs.readFileSync(dbPath).toString("utf8");
+  } catch {
+    return "";
+  }
+  return unwrapCapturedOutput(text, command.capture);
+}
+
+function latestAntigravityConversationId(log) {
+  const text = log || "";
+  let latest = "";
+  for (const match of text.matchAll(/(?:conversation=|Created conversation )([0-9a-f-]{36})/gi)) {
+    latest = match[1];
+  }
+  return latest;
+}
+
+function readProviderLog(logFile) {
+  if (!logFile) return "";
+  try {
+    return fs.readFileSync(logFile, "utf8");
+  } catch {
+    return "";
+  }
+}
+
+function cleanupProviderCommand(command) {
+  if (!command || !command.logFile) return;
+  const logFile = path.resolve(command.logFile);
+  const tempDir = path.resolve(os.tmpdir());
+  if (!logFile.startsWith(`${tempDir}${path.sep}`)) return;
+  try {
+    fs.rmSync(logFile, { force: true });
+  } catch {
+    // Best-effort cleanup for provider logs.
+  }
 }
 
 function resolveClaudeMaxTurns(args) {
@@ -165,7 +319,7 @@ function jobStatus(rawArgs) {
 
 async function healthCheck(rawArgs) {
   const timeoutMs = normalizeTimeout(rawArgs && rawArgs.timeoutMs, 10000, MIN_HEALTH_TIMEOUT_MS, MAX_HEALTH_TIMEOUT_MS);
-  const checks = await Promise.all(["claude", "gemini"].map(async (provider) => {
+  const checks = await Promise.all(["claude", "gemini", "antigravity"].map(async (provider) => {
     const command = providerCommand(provider, { policy: "advisory" });
     const result = await runCommand(command.command, ["--version"], { cwd: repoRoot, timeoutMs, input: "" });
     const output = sanitize(result.stdout || result.stderr).split(/\r?\n/)[0];
