@@ -16,7 +16,14 @@ const DISPLAY_COMMAND = process.env.CODEX_TELEGRAM_CONFIGURE_COMMAND ||
   `node ${quoteForDisplay(__filename)}`;
 const PERMISSION_HOOK_SCRIPT = path.join(__dirname, "codex-permission-telegram.js");
 const STOP_HOOK_SCRIPT = path.join(__dirname, "codex-stop-telegram.js");
+const MCP_SERVER_SCRIPT = path.join(__dirname, "..", "src", "index.js");
 const PAIRING_TTL_MS = normalizePairingTtl(process.env.CODEX_TELEGRAM_PAIRING_TTL_MS);
+const SERVER_BLOCK_BEGIN = "# BEGIN codex-telegram-bridge-mcp server";
+const SERVER_BLOCK_END = "# END codex-telegram-bridge-mcp server";
+const HOOK_BLOCK_BEGIN = "# BEGIN codex-telegram-bridge-mcp permission hook";
+const HOOK_BLOCK_END = "# END codex-telegram-bridge-mcp permission hook";
+const GITIGNORE_BLOCK_BEGIN = "# BEGIN codex-telegram-bridge-mcp local files";
+const GITIGNORE_BLOCK_END = "# END codex-telegram-bridge-mcp local files";
 
 const [command, ...rest] = process.argv.slice(2);
 
@@ -98,6 +105,11 @@ async function main() {
 
   if (command === "discover") {
     await discoverChats();
+    return;
+  }
+
+  if (command === "install-project" || command === "init-project" || command === "configure-project") {
+    installProject();
     return;
   }
 
@@ -400,10 +412,10 @@ function normalizePairingTtl(value) {
   return Math.floor(parsed);
 }
 
-function readEnv() {
+function readEnv(file = ENV_FILE) {
   const env = {};
   try {
-    const raw = fs.readFileSync(ENV_FILE, "utf8");
+    const raw = fs.readFileSync(file, "utf8");
     for (const line of raw.split(/\r?\n/)) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith("#")) continue;
@@ -414,12 +426,12 @@ function readEnv() {
   return env;
 }
 
-function writeEnv(env) {
-  fs.mkdirSync(CONFIG_DIR, { recursive: true });
+function writeEnv(env, file = ENV_FILE) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
   const lines = Object.entries(env)
     .filter(([, value]) => value !== undefined && value !== null && value !== "")
     .map(([key, value]) => `${key}=${value}`);
-  fs.writeFileSync(ENV_FILE, `${lines.join("\n")}\n`, { mode: 0o600 });
+  fs.writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o600 });
 }
 
 function addUnique(list, value) {
@@ -453,10 +465,92 @@ function commandExample(args) {
 function printPermissionHookSnippet() {
   const hookCommand = `node ${quoteForShell(PERMISSION_HOOK_SCRIPT)}`;
   const stopHookCommand = `node ${quoteForShell(STOP_HOOK_SCRIPT)}`;
-  console.log([
-    "[features]",
-    "hooks = true",
+  console.log(["[features]", "hooks = true", "", projectHookBlock(hookCommand, stopHookCommand, false)].join("\n"));
+}
+
+function installProject() {
+  const projectRoot = process.cwd();
+  const codexDir = path.join(projectRoot, ".codex");
+  const configFile = path.join(codexDir, "config.toml");
+  const projectEnvFile = path.join(codexDir, PROJECT_ENV_FILE);
+  const projectAccessFile = path.join(codexDir, PROJECT_ACCESS_FILE);
+
+  fs.mkdirSync(codexDir, { recursive: true });
+
+  const env = readEnv(projectEnvFile);
+  const hasGlobalHook = globalManagedHookInstalled();
+  if (!env.CODEX_TELEGRAM_BRIDGE_ENABLED) env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
+  if (!env.CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE && !hasGlobalHook) {
+    env.CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE = "local";
+  }
+  const hookScope = String(env.CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE || "").trim().toLowerCase();
+  writeEnv(env, projectEnvFile);
+
+  if (!fs.existsSync(projectAccessFile)) {
+    fs.writeFileSync(projectAccessFile, `${JSON.stringify(defaultAccess(), null, 2)}\n`, { mode: 0o600 });
+  }
+  const projectGitignoreFile = ensureProjectGitignore(codexDir);
+
+  const before = readText(configFile);
+  const after = installProjectConfig(before, {
+    envFile: projectEnvFile,
+    mcpScript: MCP_SERVER_SCRIPT,
+    hookScript: PERMISSION_HOOK_SCRIPT,
+    stopHookScript: STOP_HOOK_SCRIPT,
+    installLocalHook: hookScope === "local"
+  });
+  if (after !== before) {
+    fs.writeFileSync(configFile, after);
+  }
+
+  console.log(`config: ${configFile}`);
+  console.log(`env_file: ${projectEnvFile}`);
+  console.log(`access_file: ${projectAccessFile}`);
+  console.log(`gitignore_file: ${projectGitignoreFile}`);
+  console.log(`mcp_config: ${after !== before ? "updated" : "already current"}`);
+  console.log(`hook_config: ${hasGlobalHook ? "global hook already installed" : "local hook installed"}`);
+  console.log(`next: ${commandExample("token-clipboard")} then ${commandExample("pair")}`);
+}
+
+function installProjectConfig(text, options) {
+  const base = ensureHooksFeature(removeManagedBlock(removeManagedBlock(String(text || ""), SERVER_BLOCK_BEGIN, SERVER_BLOCK_END), HOOK_BLOCK_BEGIN, HOOK_BLOCK_END));
+  const withServer = hasTelegramMcpServer(base)
+    ? base
+    : appendSection(base, projectServerBlock(options.envFile, options.mcpScript));
+  if (!options.installLocalHook) return withServer.endsWith("\n") ? withServer : `${withServer}\n`;
+  const hookCommand = `node ${quoteForShell(options.hookScript)}`;
+  const stopHookCommand = `node ${quoteForShell(options.stopHookScript)}`;
+  return appendSection(withServer, projectHookBlock(hookCommand, stopHookCommand, true));
+}
+
+function hasTelegramMcpServer(text) {
+  return /^\s*\[mcp_servers\.(?:"codex-telegram-bridge"|codex-telegram-bridge)]\s*$/m.test(String(text || ""));
+}
+
+function globalManagedHookInstalled() {
+  const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const text = readText(path.join(codexHome, "config.toml"));
+  return text.includes(HOOK_BLOCK_BEGIN) && text.includes(HOOK_BLOCK_END);
+}
+
+function projectServerBlock(envFile, mcpScript) {
+  return [
+    SERVER_BLOCK_BEGIN,
+    "[mcp_servers.codex-telegram-bridge]",
+    'command = "node"',
+    `args = [${JSON.stringify(mcpScript)}]`,
+    "startup_timeout_sec = 20",
+    "tool_timeout_sec = 600",
     "",
+    "[mcp_servers.codex-telegram-bridge.env]",
+    `CODEX_TELEGRAM_BRIDGE_ENV_FILE = ${JSON.stringify(envFile)}`,
+    SERVER_BLOCK_END
+  ].join("\n");
+}
+
+function projectHookBlock(hookCommand, stopHookCommand, managed) {
+  return [
+    managed ? HOOK_BLOCK_BEGIN : "",
     "[[hooks.PermissionRequest]]",
     'matcher = "*"',
     "",
@@ -482,8 +576,76 @@ function printPermissionHookSnippet() {
     'type = "command"',
     `command = ${JSON.stringify(stopHookCommand)}`,
     "timeout = 30",
-    'statusMessage = "Sending Telegram reply"'
-  ].join("\n"));
+    'statusMessage = "Sending Telegram reply"',
+    managed ? HOOK_BLOCK_END : ""
+  ].filter((line) => line !== "").join("\n");
+}
+
+function ensureProjectGitignore(codexDir) {
+  const file = path.join(codexDir, ".gitignore");
+  const block = [
+    GITIGNORE_BLOCK_BEGIN,
+    PROJECT_ENV_FILE,
+    PROJECT_ACCESS_FILE,
+    "telegram-runtime/",
+    GITIGNORE_BLOCK_END
+  ].join("\n");
+  const before = readText(file);
+  const after = appendSection(removeManagedBlock(before, GITIGNORE_BLOCK_BEGIN, GITIGNORE_BLOCK_END), block);
+  if (after !== before) {
+    fs.writeFileSync(file, after);
+  }
+  return file;
+}
+
+function removeManagedBlock(text, begin, end) {
+  const pattern = new RegExp(`\\r?\\n?${escapeRegex(begin)}[\\s\\S]*?${escapeRegex(end)}\\r?\\n?`, "g");
+  return String(text || "")
+    .replace(pattern, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
+function ensureHooksFeature(text) {
+  const content = String(text || "");
+  const lines = content.split(/\r?\n/);
+  const featureHeaderIndex = lines.findIndex((line) => /^\s*\[features]\s*$/.test(line));
+
+  if (featureHeaderIndex < 0) {
+    return appendSection(content, ["[features]", "hooks = true"].join("\n"));
+  }
+
+  let nextTableIndex = lines.length;
+  for (let index = featureHeaderIndex + 1; index < lines.length; index += 1) {
+    if (/^\s*\[/.test(lines[index])) {
+      nextTableIndex = index;
+      break;
+    }
+  }
+
+  let hasHooksFeature = false;
+  for (let index = nextTableIndex - 1; index > featureHeaderIndex; index -= 1) {
+    if (/^\s*codex_hooks\s*=/.test(lines[index])) {
+      lines.splice(index, 1);
+      nextTableIndex -= 1;
+      continue;
+    }
+    if (/^\s*hooks\s*=/.test(lines[index])) {
+      lines[index] = "hooks = true";
+      hasHooksFeature = true;
+    }
+  }
+
+  if (!hasHooksFeature) {
+    lines.splice(featureHeaderIndex + 1, 0, "hooks = true");
+  }
+  return lines.join("\n").trimEnd();
+}
+
+function appendSection(text, section) {
+  const content = String(text || "").trimEnd();
+  if (!content) return `${section}\n`;
+  return `${content}\n\n${section}\n`;
 }
 
 function quoteForDisplay(value) {
@@ -512,9 +674,18 @@ function usage() {
     `  ${commandExample("allow <chat-id>")}`,
     `  ${commandExample("remove <chat-id>")}`,
     `  ${commandExample("policy allowlist|disabled")}`,
+    `  ${commandExample("install-project")}`,
     `  ${commandExample("hook-snippet")}`,
     `  ${commandExample("clear")}`
   ].join("\n"));
+}
+
+function readText(file) {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function resolveEnvFile() {

@@ -214,6 +214,7 @@ function telegramStatePath() {
   const configured = process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE;
   if (configured) return configured;
   const dir = process.env.CODEX_TELEGRAM_BRIDGE_RUNTIME_DIR ||
+    projectTelegramRuntimeDir() ||
     path.join(process.env.LOCALAPPDATA || os.tmpdir(), "CodexTelegramBridge", "codex-telegram-bridge-mcp");
   return path.join(dir, "telegram-state.json");
 }
@@ -222,6 +223,12 @@ function telegramDownloadDir() {
   const configured = process.env.CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR;
   if (configured) return configured;
   return path.join(path.dirname(telegramStatePath()), "downloads");
+}
+
+function projectTelegramRuntimeDir() {
+  const envFile = telegramEnvPath();
+  if (path.basename(envFile).toLowerCase() !== PROJECT_ENV_FILE) return "";
+  return path.join(path.dirname(envFile), "telegram-runtime");
 }
 
 loadEnvFiles();

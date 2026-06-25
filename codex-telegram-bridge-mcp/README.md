@@ -54,8 +54,8 @@ opening the bot or pressing a deep-link Start button.
 npm install -g @chogwanghyung/codex-telegram-bridge-mcp
 ```
 
-The package exposes the `codex-telegram-bridge-mcp` MCP binary and the
-`codex-telegram-permission-hook` Codex hook binary.
+The package exposes the `codex-telegram-bridge-mcp` MCP binary, the
+`codex-telegram-configure` setup helper, and Codex hook binaries.
 
 ## Repository Layout
 
@@ -69,7 +69,34 @@ codex-telegram-bridge-mcp/
 
 ## Codex Configuration
 
-Add this server to the target project's `.codex/config.toml`:
+From the target project root, the setup helper can install the local MCP and
+hook configuration:
+
+```powershell
+codex-telegram-configure install-project
+```
+
+When working from a local repo checkout instead of a global npm install:
+
+```powershell
+node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js install-project
+```
+
+This creates or updates:
+
+```text
+<ProjectRoot>/.codex/config.toml
+<ProjectRoot>/.codex/config.toml.env
+<ProjectRoot>/.codex/config.toml.access.json
+<ProjectRoot>/.codex/.gitignore
+```
+
+If the user-level Codex config already has the managed Telegram hook,
+`install-project` reuses it and does not add a duplicate local hook. Otherwise
+it adds a local hook block and sets `CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=local`
+in the project env file.
+
+Manual equivalent for `.codex/config.toml`:
 
 ```toml
 [mcp_servers.codex-telegram-bridge]
@@ -78,8 +105,6 @@ args = ["<Codex-MCP>/codex-telegram-bridge-mcp/src/index.js"]
 
 [mcp_servers.codex-telegram-bridge.env]
 CODEX_TELEGRAM_BRIDGE_ENV_FILE = "<ProjectRoot>/.codex/config.toml.env"
-CODEX_TELEGRAM_BRIDGE_ACCESS_FILE = "<ProjectRoot>/.codex/config.toml.access.json"
-CODEX_TELEGRAM_BRIDGE_RUNTIME_DIR = "<ProjectRoot>/.codex/telegram-runtime"
 ```
 
 Keep live secrets out of `.codex/config.toml`. Put project-specific runtime
@@ -88,18 +113,15 @@ settings in `.codex/config.toml.env` and gitignore it:
 ```dotenv
 CODEX_TELEGRAM_BRIDGE_ENABLED=1
 TELEGRAM_BOT_TOKEN=<bot-token>
-TELEGRAM_ALLOWED_CHAT_IDS=<chat-id>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # Optional stale relay reply guard; default is 24 hours.
 # CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
-# Optional inbound media download settings:
-# CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR=<ProjectRoot>/.codex/telegram-runtime/downloads
+# Optional inbound media limit:
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
 # Telegram-origin requests are replied to by the bundled Stop hook.
 # Optional native Codex permission approval:
-# CODEX_TELEGRAM_APPROVAL_CHAT_IDS=<chat-id>
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_BEHAVIOR=ask
 # CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED=1
@@ -107,7 +129,24 @@ CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=global
 ```
 
-Commit only a safe `.codex/config.toml.env.example` file.
+When the env file is named `.codex/config.toml.env`, the bridge and bundled
+hooks default to `.codex/config.toml.access.json` for chat allowlist data and
+`.codex/telegram-runtime` for shared state. Inbound Telegram files are saved to
+`.codex/telegram-runtime/downloads` by default. Avoid setting
+`CODEX_TELEGRAM_BRIDGE_RUNTIME_DIR`, `CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR`, or
+`CODEX_TELEGRAM_BRIDGE_ACCESS_FILE` unless you intentionally need a custom
+path. If you do override them, put the override in the env file too, not only
+in the MCP server inline env, because Codex hook processes do not inherit
+MCP-server-only env values.
+
+Chat IDs normally live only in `.codex/config.toml.access.json`, managed by the
+pairing helper or `telegram-configure.js allow <chat-id>`. Native permission
+approval uses that same allowlist by default, so `TELEGRAM_ALLOWED_CHAT_IDS` and
+`CODEX_TELEGRAM_APPROVAL_CHAT_IDS` are not needed for the common setup.
+
+`install-project` writes `.codex/.gitignore` so live secrets, allowlists, and
+runtime downloads stay local by default. Commit only a safe
+`.codex/config.toml.env.example` file.
 
 If installed globally from npm, the MCP command can be the package binary:
 
@@ -121,7 +160,7 @@ command = "codex-telegram-bridge-mcp"
 Clipboard setup:
 
 ```powershell
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js token-clipboard
+codex-telegram-configure token-clipboard
 ```
 
 The command reads the BotFather token from the local clipboard, saves it without
@@ -130,7 +169,7 @@ printing the token, and creates a short pairing code plus a Telegram deep link.
 Open the printed `pair_link`, press Start in Telegram, then pair:
 
 ```powershell
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js pair <code>
+codex-telegram-configure pair <code>
 ```
 
 The script checks recent Telegram updates for `/start <code>` or the raw code,
@@ -144,16 +183,17 @@ If exactly one pending code exists, `pair` can be run without an argument.
 Use the configure script directly:
 
 ```powershell
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js status
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js token-clipboard
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js pair <code>
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js discover
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js allow <chat-id>
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js remove <chat-id>
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js policy allowlist
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js policy disabled
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js hook-snippet
-node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js clear
+codex-telegram-configure install-project
+codex-telegram-configure status
+codex-telegram-configure token-clipboard
+codex-telegram-configure pair <code>
+codex-telegram-configure discover
+codex-telegram-configure allow <chat-id>
+codex-telegram-configure remove <chat-id>
+codex-telegram-configure policy allowlist
+codex-telegram-configure policy disabled
+codex-telegram-configure hook-snippet
+codex-telegram-configure clear
 ```
 
 After token or allowlist changes, restart or resume Codex so the MCP server
