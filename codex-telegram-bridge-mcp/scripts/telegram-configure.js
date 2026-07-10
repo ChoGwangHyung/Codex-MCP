@@ -6,6 +6,7 @@ const childProcess = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { upsertManagedHooks } = require("../src/hook-install.js");
 
 const PROJECT_ENV_FILE = "config.toml.env";
 const PROJECT_ACCESS_FILE = "config.toml.access.json";
@@ -465,7 +466,11 @@ function commandExample(args) {
 function printPermissionHookSnippet() {
   const hookCommand = `node ${quoteForShell(PERMISSION_HOOK_SCRIPT)}`;
   const stopHookCommand = `node ${quoteForShell(STOP_HOOK_SCRIPT)}`;
-  console.log(["[features]", "hooks = true", "", projectHookBlock(hookCommand, stopHookCommand, false)].join("\n"));
+  console.log("config.toml:\n[features]\nhooks = true\n");
+  console.log(`hooks.json:\n${JSON.stringify(upsertManagedHooks({}, {
+    permissionCommand: hookCommand,
+    stopCommand: stopHookCommand
+  }), null, 2)}`);
 }
 
 function installProject() {
@@ -474,6 +479,7 @@ function installProject() {
   const configFile = path.join(codexDir, "config.toml");
   const projectEnvFile = path.join(codexDir, PROJECT_ENV_FILE);
   const projectAccessFile = path.join(codexDir, PROJECT_ACCESS_FILE);
+  const projectHooksFile = path.join(codexDir, "hooks.json");
 
   fs.mkdirSync(codexDir, { recursive: true });
 
@@ -494,18 +500,19 @@ function installProject() {
   const before = readText(configFile);
   const after = installProjectConfig(before, {
     envFile: projectEnvFile,
-    mcpScript: MCP_SERVER_SCRIPT,
-    hookScript: PERMISSION_HOOK_SCRIPT,
-    stopHookScript: STOP_HOOK_SCRIPT,
-    installLocalHook: hookScope === "local"
+    mcpScript: MCP_SERVER_SCRIPT
   });
   if (after !== before) {
     fs.writeFileSync(configFile, after);
+  }
+  if (hookScope === "local") {
+    installProjectHooks(projectHooksFile);
   }
 
   console.log(`config: ${configFile}`);
   console.log(`env_file: ${projectEnvFile}`);
   console.log(`access_file: ${projectAccessFile}`);
+  if (hookScope === "local") console.log(`hooks_file: ${projectHooksFile}`);
   console.log(`gitignore_file: ${projectGitignoreFile}`);
   console.log(`mcp_config: ${after !== before ? "updated" : "already current"}`);
   console.log(`hook_config: ${hasGlobalHook ? "global hook already installed" : "local hook installed"}`);
@@ -517,10 +524,26 @@ function installProjectConfig(text, options) {
   const withServer = hasTelegramMcpServer(base)
     ? base
     : appendSection(base, projectServerBlock(options.envFile, options.mcpScript));
-  if (!options.installLocalHook) return withServer.endsWith("\n") ? withServer : `${withServer}\n`;
-  const hookCommand = `node ${quoteForShell(options.hookScript)}`;
-  const stopHookCommand = `node ${quoteForShell(options.stopHookScript)}`;
-  return appendSection(withServer, projectHookBlock(hookCommand, stopHookCommand, true));
+  return withServer.endsWith("\n") ? withServer : `${withServer}\n`;
+}
+
+function installProjectHooks(file) {
+  const before = readText(file);
+  let parsed = {};
+  if (before.trim()) {
+    try {
+      parsed = JSON.parse(before);
+    } catch (error) {
+      throw new Error(`Invalid Codex hooks JSON at ${file}: ${error.message}`);
+    }
+  }
+  const hookCommand = `node ${quoteForShell(PERMISSION_HOOK_SCRIPT)}`;
+  const stopHookCommand = `node ${quoteForShell(STOP_HOOK_SCRIPT)}`;
+  const after = `${JSON.stringify(upsertManagedHooks(parsed, {
+    permissionCommand: hookCommand,
+    stopCommand: stopHookCommand
+  }), null, 2)}\n`;
+  if (after !== before) fs.writeFileSync(file, after);
 }
 
 function hasTelegramMcpServer(text) {
@@ -530,7 +553,14 @@ function hasTelegramMcpServer(text) {
 function globalManagedHookInstalled() {
   const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
   const text = readText(path.join(codexHome, "config.toml"));
-  return text.includes(HOOK_BLOCK_BEGIN) && text.includes(HOOK_BLOCK_END);
+  if (text.includes(HOOK_BLOCK_BEGIN) && text.includes(HOOK_BLOCK_END)) return true;
+  try {
+    const hooks = JSON.parse(readText(path.join(codexHome, "hooks.json")) || "{}");
+    return /codex-permission-telegram(?:\.js)?\b/i.test(JSON.stringify(hooks)) &&
+      /codex-stop-telegram(?:\.js)?\b/i.test(JSON.stringify(hooks));
+  } catch {
+    return false;
+  }
 }
 
 function projectServerBlock(envFile, mcpScript) {
@@ -546,39 +576,6 @@ function projectServerBlock(envFile, mcpScript) {
     `CODEX_TELEGRAM_BRIDGE_ENV_FILE = ${JSON.stringify(envFile)}`,
     SERVER_BLOCK_END
   ].join("\n");
-}
-
-function projectHookBlock(hookCommand, stopHookCommand, managed) {
-  return [
-    managed ? HOOK_BLOCK_BEGIN : "",
-    "[[hooks.PermissionRequest]]",
-    'matcher = "*"',
-    "",
-    "[[hooks.PermissionRequest.hooks]]",
-    'type = "command"',
-    `command = ${JSON.stringify(hookCommand)}`,
-    "timeout = 330",
-    'statusMessage = "Waiting for Telegram approval"',
-    "",
-    "[[hooks.PostToolUse]]",
-    'matcher = "*"',
-    "",
-    "[[hooks.PostToolUse.hooks]]",
-    'type = "command"',
-    `command = ${JSON.stringify(hookCommand)}`,
-    "timeout = 30",
-    'statusMessage = "Updating Telegram approval state"',
-    "",
-    "[[hooks.Stop]]",
-    'matcher = "*"',
-    "",
-    "[[hooks.Stop.hooks]]",
-    'type = "command"',
-    `command = ${JSON.stringify(stopHookCommand)}`,
-    "timeout = 30",
-    'statusMessage = "Sending Telegram reply"',
-    managed ? HOOK_BLOCK_END : ""
-  ].filter((line) => line !== "").join("\n");
 }
 
 function ensureProjectGitignore(codexDir) {

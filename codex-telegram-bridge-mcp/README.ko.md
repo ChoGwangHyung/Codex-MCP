@@ -85,6 +85,7 @@ node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js install
 
 ```text
 <ProjectRoot>/.codex/config.toml
+<ProjectRoot>/.codex/hooks.json
 <ProjectRoot>/.codex/config.toml.env
 <ProjectRoot>/.codex/config.toml.access.json
 <ProjectRoot>/.codex/.gitignore
@@ -92,7 +93,7 @@ node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js install
 
 user-level Codex config에 managed Telegram hook이 이미 있으면 `install-project`는
 그 hook을 재사용하고 local hook을 중복 추가하지 않습니다. 전역 hook이 없을 때만
-local hook block을 추가하고 project env file에
+local `.codex/hooks.json`에 hook 정의를 추가하고 project env file에
 `CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=local`을 설정합니다.
 
 수동으로 `.codex/config.toml`에 넣을 경우의 최소 설정은 다음과 같습니다.
@@ -114,6 +115,8 @@ CODEX_TELEGRAM_BRIDGE_ENABLED=1
 TELEGRAM_BOT_TOKEN=<bot-token>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
+# 자동 Codex relay만 끄고 send/receive tool은 유지하려면 0:
+# CODEX_TELEGRAM_CODEX_RELAY_ENABLED=0
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # stale relay reply 방지 설정. 기본값은 24시간입니다.
 # CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
@@ -202,8 +205,10 @@ token 또는 allowlist가 바뀐 뒤에는 Codex를 restart/resume해서 MCP 서
 설정이 완료되면 서버는 Telegram `getUpdates` monitor를 시작합니다. allowlist에
 등록된 텍스트 메시지를 capped runtime inbox에 저장하고, allowlist inbound
 사진/document를 runtime download directory에 저장하며, 공유 offset을
-전진시키고 allowlist 밖의 채팅은 무시합니다. 사진과 파일 inbox entry에는 Codex가
-확인할 수 있는 local file path가 포함됩니다.
+bot-token 단위 broker에서 전진시키고 allowlist 밖의 채팅은 무시합니다. 다운로드는
+임시 local file로 streaming하며 `CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES`를 넘는 즉시
+중단합니다. 사진과 파일 inbox entry에는 Codex가 확인할 수 있는 local file path가
+포함됩니다.
 
 캡처된 메시지 읽기:
 
@@ -337,6 +342,9 @@ bridge 설정이 완료되면 allowlist Telegram 메시지는 기본적으로 �
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 ```
 
+Telegram MCP tool은 유지하고 incoming 메시지의 Codex 주입만 끄려면
+`CODEX_TELEGRAM_CODEX_RELAY_ENABLED=0`을 설정합니다.
+
 지원 relay mode:
 
 | Mode | 사용처 |
@@ -382,12 +390,13 @@ Codex가 native approval prompt를 표시하기 직전에 bundled hook command�
 Codex의 `allow` 또는 `deny` 결정으로 반환합니다.
 
 MCP 서버가 시작되고 Telegram 설정이 완료되어 있으면 Codex `PermissionRequest`,
-`PostToolUse`, `Stop` hook을 자동 설치합니다. 기본값은 user-level Codex config인
-`$CODEX_HOME/config.toml` 또는 `%USERPROFILE%/.codex/config.toml`입니다. 그래서
-기존 Codex 프로젝트에서도 프로젝트별 설정 없이 hook을 사용할 수 있습니다.
+`PostToolUse`, `Stop` hook을 자동 설치합니다. user-level `config.toml`에는
+`[features].hooks`를 켜고, hook 정의는 `$CODEX_HOME/hooks.json` 또는
+`%USERPROFILE%/.codex/hooks.json`에 저장합니다. 그래서 기존 Codex 프로젝트에서도
+프로젝트별 설정 없이 hook을 사용할 수 있습니다.
 
 `CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=local`을 설정하면 현재 프로젝트의
-`.codex/config.toml`에만 managed hook block을 설치합니다. Telegram approval을
+`.codex/hooks.json`에 managed hook 정의를 설치합니다. Telegram approval을
 이 MCP server를 명시적으로 켠 프로젝트에서만 쓰고 싶다면 local scope가 더
 깔끔합니다.
 
@@ -396,78 +405,23 @@ restart/resume이 필요할 수 있습니다. 이후에는 MCP 연결과 user-le
 native permission request가 Telegram으로 전달됩니다.
 
 자동 hook 설치를 끄려면 `CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=0`을
-설정합니다. installer는 managed block을 refresh할 때 Codex `/hooks` trust state를
-보존하므로, 한 번 review한 hook이 MCP restart 때문에 다시 미검토 상태가 되지
-않아야 합니다. 같은 hook snippet을 확인하거나 수동 설치하려면 다음 명령을 사용합니다.
+설정합니다. installer는 managed hook 정의를 refresh할 때 Codex `/hooks` trust state를
+보존하므로, 정의가 바뀌지 않았다면 MCP restart 때문에 다시 미검토 상태가 되지
+않아야 합니다. inline TOML에서 `hooks.json`으로 처음 이동할 때나 package update로
+command가 바뀔 때는 `/hooks` review가 한 번 다시 필요할 수 있습니다. 같은 hook
+설정을 확인하거나 수동 설치하려면 다음 명령을 사용합니다.
 
 ```powershell
 node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js hook-snippet
 ```
 
-이 명령은 TOML snippet을 출력합니다.
-
-```toml
-[features]
-hooks = true
-
-[[hooks.PermissionRequest]]
-matcher = "*"
-
-[[hooks.PermissionRequest.hooks]]
-type = "command"
-command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
-timeout = 330
-statusMessage = "Waiting for Telegram approval"
-
-[[hooks.PostToolUse]]
-matcher = "*"
-
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
-timeout = 30
-statusMessage = "Updating Telegram approval state"
-
-[[hooks.Stop]]
-matcher = "*"
-
-[[hooks.Stop.hooks]]
-type = "command"
-command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-stop-telegram.js"
-timeout = 30
-statusMessage = "Sending Telegram reply"
-```
-
-npm global 설치로 사용할 경우 package binary를 사용할 수 있습니다.
-
-```toml
-[[hooks.PermissionRequest]]
-matcher = "*"
-
-[[hooks.PermissionRequest.hooks]]
-type = "command"
-command = "codex-telegram-permission-hook"
-timeout = 330
-statusMessage = "Waiting for Telegram approval"
-
-[[hooks.PostToolUse]]
-matcher = "*"
-
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = "codex-telegram-permission-hook"
-timeout = 30
-statusMessage = "Updating Telegram approval state"
-
-[[hooks.Stop]]
-matcher = "*"
-
-[[hooks.Stop.hooks]]
-type = "command"
-command = "codex-telegram-stop-hook"
-timeout = 30
-statusMessage = "Sending Telegram reply"
-```
+이 명령은 작은 `config.toml` feature section과 전체 `hooks.json` 객체를 출력합니다.
+installer는 Telegram handler만 구조적으로 병합하고 다른 JSON hook은 보존합니다.
+기존 inline Telegram block을 마이그레이션할 때도 관련 없는 config table과 Codex hook
+trust state는 보존합니다. global scope는 버전별 npm 내부 경로 대신 설치된 package
+binary를 우선하므로 일반적인 package update에서 hook command hash가 바뀌지 않습니다.
+local scope와 source checkout은 package binary가 없을 때 absolute script path로
+fallback합니다.
 
 동작:
 
@@ -494,8 +448,9 @@ statusMessage = "Sending Telegram reply"
 - bundled `Stop` hook은 Telegram relay에서 시작된 요청에만 회신합니다. 일반 CLI
   요청의 turn 완료는 무시합니다.
 - Telegram에는 `승인` / `항상 승인` / `거부` inline 버튼이 표시됩니다. 내부 요청
-  code는 callback payload 안에만 있고 메시지 본문에는 표시하지 않습니다. 첫 응답이
-  접수되면 버튼은 제거됩니다.
+  code는 callback payload 안에만 있고 메시지 본문에는 표시하지 않습니다. 실제
+  command/tool input도 생략하고 tool name, reason, cwd만 표시합니다. 첫 응답이 접수되면
+  버튼은 제거됩니다.
 - `항상 승인`은 같은 session, cwd, tool name, 정확히 같은 tool input signature에
   대한 bridge-side 승인을 저장합니다. Codex의 전역 permission 설정은 변경하지
   않습니다. 저장된 항상 승인을 쓰지 않으려면 Telegram runtime state 파일을
@@ -534,6 +489,7 @@ Project-local 상태:
 ```text
 <project>/.codex/
 ├─ config.toml
+├─ hooks.json
 ├─ config.toml.env
 ├─ config.toml.env.example
 ├─ config.toml.access.json
@@ -557,14 +513,19 @@ Access JSON 저장 값:
 ## 여러 MCP 인스턴스
 
 여러 Codex 세션에서 같은 bot token으로 이 MCP 서버를 실행할 수 있습니다. bridge는
-Telegram `getUpdates`에 token 단위 cross-process lock을 걸고, local state write에는
-state-file lock을 걸기 때문에 여러 monitor가 동시에 떠도 Telegram long polling
-충돌이나 runtime state 파일 손상을 피합니다.
+token 단위 cooperative broker를 사용합니다. 한 번에 한 process만 Telegram을 poll하고,
+모든 update를 먼저 shared local journal에 기록하며, 승인/선택 요청별 subscriber가
+각자 callback을 읽습니다. 따라서 다른 MCP process가 callback을 먼저 가져가거나
+runtime state 파일을 손상시키는 문제를 피합니다.
 
-단, Telegram update는 bot token 기준으로 한 번만 소비됩니다. 같은 bot token을 쓰는
-여러 Codex 세션이 서로 다른 runtime state 파일을 쓰면, 특정 메시지는 그 update를
-받은 인스턴스 하나에만 relay됩니다. 하나의 공유 relay target이면 같은 runtime state
-파일을 쓰고, 세션별 독립 routing이 필요하면 bot token 또는 chat을 분리하세요.
+일반 Telegram 메시지는 chat별 활성 Codex 프로젝트 하나로만 route됩니다. bot에
+`/sessions`를 보내면 현재 live target을 확인하고, `/use <id>`로 대상을 선택할 수
+있습니다. 선택한 target이 사라지면 다음 eligible monitor가 활성화됩니다.
+`/sessions`와 `/use`는 broker control command라 Codex 세션에는 주입되지 않습니다.
+`telegram_ask`나 permission approval이 text fallback을 기다리는 동안에는 해당 chat을
+요청 프로젝트로 임시 route하고, 완료되면 기존 활성 route를 다시 사용합니다.
+chat 간 routing state까지 완전히 분리해야 하면 별도 bot token을 쓰는 것이 가장
+강한 격리 방식입니다.
 
 ## 보안 메모
 

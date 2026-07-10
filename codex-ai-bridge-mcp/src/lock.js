@@ -76,10 +76,23 @@ function lockScopeName(scope) {
 }
 
 function lockScopeLabel(scope) {
-  const configured = String(process.env.CODEX_AI_BRIDGE_LOCK_SCOPE || "workspace").toLowerCase();
+  const configuredRaw = String(process.env.CODEX_AI_BRIDGE_LOCK_SCOPE || "workspace");
+  const configured = configuredRaw.toLowerCase();
   if (configured === "global" || configured === "provider") return "global";
-  if (configured && configured !== "workspace") return configured;
-  return String(scope || process.env.CODEX_AI_BRIDGE_ROOT || process.cwd());
+  if (configured && configured !== "workspace") return `namespace:${configuredRaw}`;
+  return canonicalWorkspaceScope(scope || process.env.CODEX_AI_BRIDGE_ROOT || process.cwd());
+}
+
+function canonicalWorkspaceScope(scope) {
+  let resolved = path.normalize(path.resolve(String(scope)));
+  try {
+    resolved = fs.realpathSync.native(resolved);
+  } catch {
+    // A caller may supply a workspace path before it exists. The normalized
+    // absolute path is still a stable lock namespace.
+  }
+  if (process.platform === "win32") resolved = resolved.toLowerCase();
+  return resolved;
 }
 
 function lockWaitMs(timeoutMs) {
@@ -238,5 +251,6 @@ module.exports = {
   providerLockPath,
   providerLocksEnabled,
   acquireProviderLock,
-  releaseProviderLock
+  releaseProviderLock,
+  canonicalWorkspaceScope
 };

@@ -4,12 +4,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { Readable } = require("node:stream");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-inbound-media-"));
 
 process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
 process.env.CODEX_TELEGRAM_MONITOR_ENABLED = "0";
-process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
+process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
 process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-state.json");
 process.env.CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR = path.join(tempDir, "downloads");
@@ -17,6 +18,7 @@ process.env.CODEX_TELEGRAM_BRIDGE_DOWNLOAD_DIR = path.join(tempDir, "downloads")
 const originalFetch = global.fetch;
 const calls = [];
 const fileBytes = Buffer.from([0xff, 0xd8, 0xff, 0xd9]);
+let declaredContentLength = fileBytes.length;
 
 global.fetch = async (url, options) => {
   const href = String(url);
@@ -38,9 +40,9 @@ global.fetch = async (url, options) => {
     return {
       ok: true,
       headers: {
-        get: (name) => String(name).toLowerCase() === "content-length" ? String(fileBytes.length) : null
+        get: (name) => String(name).toLowerCase() === "content-length" ? String(declaredContentLength) : null
       },
-      arrayBuffer: async () => fileBytes.buffer.slice(fileBytes.byteOffset, fileBytes.byteOffset + fileBytes.byteLength)
+      body: Readable.from([fileBytes])
     };
   }
 
@@ -87,6 +89,15 @@ function telegramResponse(result) {
   assert.equal(messages[0].attachments[0].fileSize, fileBytes.length);
   assert.equal(fs.readFileSync(messages[0].attachments[0].localPath).compare(fileBytes), 0);
   assert.deepEqual(calls.map((call) => call.method), ["getFile", "file_1.jpg"]);
+
+  declaredContentLength = 0;
+  const overflowPath = path.join(tempDir, "downloads", "overflow.jpg");
+  await assert.rejects(
+    () => _test.downloadTelegramFileContent("photos/file_1.jpg", overflowPath, 3),
+    /more than 3 bytes/
+  );
+  assert.equal(fs.existsSync(overflowPath), false);
+  assert.equal(fs.readdirSync(path.dirname(overflowPath)).some((name) => name.startsWith("overflow.jpg.")), false);
 })().finally(() => {
   global.fetch = originalFetch;
 }).catch((error) => {

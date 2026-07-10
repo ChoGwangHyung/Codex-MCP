@@ -49,7 +49,7 @@ function taskSchema(options = {}) {
     preset: {
       type: "string",
       enum: ["review"],
-      description: "review applies Claude Fable 5/max defaults and a 15 minute hard timeout unless overridden."
+      description: "review applies the latest Claude Fable alias with max effort and a 15 minute hard timeout unless overridden."
     },
     role: { type: "string", enum: [...ROLES], default: DEFAULT_ROLE },
     policy: {

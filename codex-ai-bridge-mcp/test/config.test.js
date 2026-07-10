@@ -25,7 +25,7 @@ try {
     const args = validateTaskArgs({ prompt: "review this", preset: "review" }, { provider: "claude" });
     assert.equal(args.timeoutMs, REVIEW_TIMEOUT_MS);
     assert.equal(args.syncBudgetMs, REVIEW_SYNC_BUDGET_MS);
-    assert.equal(args.model, "claude-fable-5");
+    assert.equal(args.model, "fable");
     assert.equal(args.effort, "max");
     assert.equal(args.maxTurns, REVIEW_MAX_TURNS);
     assert.equal(args.role, "reviewer");

@@ -170,14 +170,27 @@ async function runProvider(provider, args, prompt, command, job) {
   const output = stdoutOutput || recoveredOutput;
   if (result.ok && (!command.emptyOutputIsFailure || output)) {
     cleanupProviderCommand(command);
-    return `${provider} result:\n${output || "(no output)"}`;
+    return {
+      ok: true,
+      status: "completed",
+      text: `${provider} result:\n${output || "(no output)"}`,
+      pid: result.pid,
+      elapsedMs: result.elapsedMs
+    };
   }
   const failureResult = result.ok && command.emptyOutputIsFailure
     ? { ...result, ok: false, error: "completed without stdout" }
     : result;
   const failure = formatProviderFailure(provider, args, failureResult, command);
   cleanupProviderCommand(command);
-  return failure;
+  return {
+    ok: false,
+    status: failureResult.timedOut ? "timeout" : "failed",
+    failureKind: failureResult.timedOut ? "hard_timeout" : "provider_failure",
+    text: failure,
+    pid: failureResult.pid,
+    elapsedMs: failureResult.elapsedMs
+  };
 }
 
 function formatProviderFailure(provider, args, result, command) {

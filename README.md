@@ -44,10 +44,13 @@ Codex-MCP/
 
 ```powershell
 npm run check
+npm run release:check
 ```
 
-Validation is a recommended smoke check before publishing or after editing. It
-is not required for normal local runtime use.
+`check` runs package tests. `release:check` also validates npm tarball contents,
+JSON-RPC initialization and `tools/list`, diff whitespace, and accidental
+secrets or machine-specific content. CI runs the release check on Windows and
+Linux with Node.js 20 and 22.
 
 ## Security
 

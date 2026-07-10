@@ -7,7 +7,7 @@ const path = require("node:path");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-stop-hook-"));
 process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
-process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
+process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
 process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-state.json");
 
@@ -45,7 +45,7 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
           chatId: "12345",
           threadId: "session-1",
           turnId: "",
-          cwd: "D:/Projects/TalkLog",
+          cwd: "D:/Projects/SampleProject",
           deliveredAt: oldDeliveredAt,
           status: "pending"
         },
@@ -55,7 +55,7 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
           chatId: "12345",
           threadId: "session-1",
           turnId: "turn-1",
-          cwd: "D:/Projects/TalkLog",
+          cwd: "D:/Projects/SampleProject",
           deliveredAt,
           status: "pending"
         }
@@ -68,7 +68,7 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
     hook_event_name: "Stop",
     session_id: "session-1",
     turn_id: "turn-1",
-    cwd: "D:/Projects/TalkLog",
+    cwd: "D:/Projects/SampleProject",
     last_assistant_message: "완료했습니다.\n검증도 통과했습니다."
   }, {
     sendText: async ({ chatId, text }) => {
@@ -95,7 +95,7 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
     hook_event_name: "Stop",
     session_id: "session-1",
     turn_id: "turn-1",
-    cwd: "D:/Projects/TalkLog",
+    cwd: "D:/Projects/SampleProject",
     last_assistant_message: "중복"
   }, {
     sendText: async ({ chatId, text }) => {
@@ -112,21 +112,21 @@ const { readTelegramState, writeTelegramState } = require("../src/state.js");
   ], {
     hook_event_name: "Stop",
     session_id: "session-2",
-    cwd: "D:/Projects/TalkLog"
+    cwd: "D:/Projects/SampleProject"
   }, { now, ttlMs: 60000 }).id, "new");
   assert.equal(selectPendingReply([
     { id: "expired", chatId: "12345", threadId: "session-2", cwd: "d:/projects/talklog", deliveredAt: new Date(now - 120000).toISOString(), status: "pending" }
   ], {
     hook_event_name: "Stop",
     session_id: "session-2",
-    cwd: "D:/Projects/TalkLog"
+    cwd: "D:/Projects/SampleProject"
   }, { now, ttlMs: 60000 }), null);
   assert.equal(selectPendingReply([
     { id: "cwd-only", chatId: "12345", cwd: "d:/projects/talklog", deliveredAt: new Date(now - 1000).toISOString(), status: "pending" }
   ], {
     hook_event_name: "Stop",
     session_id: "cli-session",
-    cwd: "D:/Projects/TalkLog"
+    cwd: "D:/Projects/SampleProject"
   }, { now, ttlMs: 60000 }), null);
 
   assert.deepEqual(telegramTextChunks("x".repeat(4000)).map((chunk) => chunk.length), [3900, 100]);

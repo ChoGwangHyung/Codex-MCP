@@ -8,7 +8,7 @@ const path = require("node:path");
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-state-lock-"));
 process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-state.json");
 process.env.LOCALAPPDATA = tempDir;
-process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
+process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 
 const {
   readTelegramState,

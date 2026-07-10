@@ -31,7 +31,7 @@ function downloadMaxBytes() {
 }
 
 function relayEnabled() {
-  return true;
+  return process.env.CODEX_TELEGRAM_CODEX_RELAY_ENABLED !== "0";
 }
 
 function relayMode() {

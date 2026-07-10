@@ -8,9 +8,10 @@ const path = require("node:path");
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-ask-timeout-"));
 process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
 process.env.CODEX_TELEGRAM_MONITOR_ENABLED = "0";
-process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
+process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
 process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-state.json");
+process.env.CODEX_TELEGRAM_BROKER_STATE_FILE = path.join(tempDir, "broker-state.json");
 
 const originalFetch = global.fetch;
 

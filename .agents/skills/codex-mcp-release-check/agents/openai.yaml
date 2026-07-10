@@ -1,0 +1,4 @@
+interface:
+  display_name: "Codex MCP Release Check"
+  short_description: "Validate all Codex MCP packages before release"
+  default_prompt: "Run the complete Codex MCP release verification and report any blockers."

@@ -35,7 +35,7 @@ try {
   fs.mkdirSync(codexDir, { recursive: true });
   fs.writeFileSync(envFile, [
     "CODEX_TELEGRAM_BRIDGE_ENABLED=1",
-    "TELEGRAM_BOT_TOKEN=123456:abcdefghijklmnopqrstuvwxyz",
+    "TELEGRAM_BOT_TOKEN=test-bot-token",
     ""
   ].join("\n"));
   fs.writeFileSync(accessFile, JSON.stringify({

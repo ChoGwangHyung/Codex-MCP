@@ -15,18 +15,26 @@ const {
   allowedChatIds,
   assertTelegram,
   bridgeEnabled,
-  telegramDownloadDir
+  telegramDownloadDir,
+  relayTargetCwd
 } = require("./config.js");
 const {
   readTelegramState,
   writeTelegramState,
-  withTelegramStateLock,
-  withTelegramUpdateLock
+  withTelegramStateLock
 } = require("./state.js");
+const {
+  brokerStatus,
+  claimBrokerUpdate,
+  consumeBrokerUpdates,
+  createBrokerSubscription,
+  monitorConsumer,
+  pollBrokerUpdates,
+  removeBrokerSubscription
+} = require("./broker.js");
 const { normalizeTimeout, normalizeInteger, delay, sanitize } = require("./util.js");
 const {
   approvalRequestText,
-  parseApprovalCallbackData,
   parseApprovalDecision
 } = require("./approval.js");
 const {
@@ -181,10 +189,10 @@ async function telegramWaitReply(args) {
 
   if (args.ignoreExisting !== false) {
     await telegramSyncOffset();
-    clearInboxForChat(chatId);
+    await clearInboxForChat(chatId);
   }
 
-  const existing = takeFirstInboxMessage(chatId, true);
+  const existing = await takeFirstInboxMessage(chatId, true);
   if (existing) {
     return formatReply(existing);
   }
@@ -284,9 +292,10 @@ function safeFileName(value) {
 async function telegramSyncOffset() {
   await withPollLock(async () => {
     for (let drainCount = 0; drainCount < 100; drainCount += 1) {
-      const updates = await fetchTelegramUpdates(0);
-      if (!Array.isArray(updates) || updates.length < 100) break;
+      const result = await pollSharedTelegramUpdates(0);
+      if (!Array.isArray(result.updates) || result.updates.length < 100) break;
     }
+    await createBrokerSubscription(monitorSubscriberId(), { startAtEnd: true, reset: true });
   });
 }
 
@@ -298,7 +307,7 @@ async function telegramAsk(args) {
   assertTelegram(chatId);
   startTelegramMonitor();
   await telegramSyncOffset();
-  clearInboxForChat(chatId);
+  await clearInboxForChat(chatId);
 
   if (choices.length === 0) {
     await telegramSend({ ...args, chatId, text });
@@ -306,21 +315,36 @@ async function telegramAsk(args) {
   }
 
   const requestId = createChoiceRequestId();
-  const sent = await telegramApi("sendMessage", {
-    chat_id: chatId,
-    text,
-    disable_web_page_preview: Boolean(args.disableWebPagePreview),
-    reply_markup: choiceReplyMarkup(requestId, choices)
+  const subscriberId = `choice:${requestId}`;
+  await createBrokerSubscription(subscriberId, {
+    startAtEnd: true,
+    reset: true,
+    routeConsumerId: currentMonitorConsumer().id,
+    chatIds: [chatId],
+    interceptMessages: true,
+    expiresInMs: timeoutMs
   });
-  const result = await waitForChoiceResponse({
-    chatId,
-    messageId: sent && sent.message_id,
-    question: text,
-    choices,
-    requestId,
-    timeoutMs
-  });
-  return JSON.stringify(result, null, 2);
+  try {
+    const sent = await telegramApi("sendMessage", {
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: Boolean(args.disableWebPagePreview),
+      reply_markup: choiceReplyMarkup(requestId, choices)
+    });
+    const result = await waitForChoiceResponse({
+      chatId,
+      messageId: sent && sent.message_id,
+      question: text,
+      choices,
+      requestId,
+      subscriberId,
+      timeoutMs
+    });
+    return JSON.stringify(result, null, 2);
+  } catch (error) {
+    await removeBrokerSubscription(subscriberId);
+    throw error;
+  }
 }
 
 async function telegramInboxRead(args) {
@@ -334,16 +358,18 @@ async function telegramInboxRead(args) {
   if (chatId) assertTelegram(chatId);
 
   const allowed = allowedChatIds();
-  const state = readTelegramState();
-  const messages = state.inbox
-    .filter((message) => (!chatId || message.chatId === chatId) && allowed.has(message.chatId))
-    .slice(0, limit);
-
-  if (consume && messages.length > 0) {
-    const consumed = new Set(messages.map((message) => message.id));
-    state.inbox = state.inbox.filter((message) => !consumed.has(message.id));
-    writeTelegramState(state);
-  }
+  const messages = await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const selected = state.inbox
+      .filter((message) => (!chatId || message.chatId === chatId) && allowed.has(message.chatId))
+      .slice(0, limit);
+    if (consume && selected.length > 0) {
+      const consumed = new Set(selected.map((message) => message.id));
+      state.inbox = state.inbox.filter((message) => !consumed.has(message.id));
+      writeTelegramState(state);
+    }
+    return selected;
+  });
 
   if (messages.length === 0) {
     return "telegram inbox: 0 messages";
@@ -357,6 +383,8 @@ async function telegramInboxRead(args) {
 
 async function telegramMonitorStatus() {
   const state = readTelegramState();
+  const consumer = currentMonitorConsumer();
+  const shared = await brokerStatus(consumer.id);
   const allowed = allowedChatIds();
   const perChat = new Map();
   for (const message of state.inbox) {
@@ -367,7 +395,10 @@ async function telegramMonitorStatus() {
     `telegram_monitor: ${monitorStarted ? "started" : "stopped"}`,
     `running: ${monitorRunning ? "yes" : "no"}`,
     `configured: ${telegramEnabled() ? "yes" : "no"}`,
-    `update_offset: ${state.updateOffset || 0}`,
+    `update_offset: ${shared.updateOffset || state.updateOffset || 0}`,
+    `broker_records: ${shared.records}`,
+    `broker_consumer: ${consumer.label} (${consumer.shortId})`,
+    `broker_sessions: ${shared.consumers.filter((item) => item.active).length}`,
     `inbox_messages: ${state.inbox.length}`,
     `allowed_chats: ${allowed.size}`,
     `last_poll_at: ${monitorLastPollAt || "never"}`,
@@ -428,6 +459,7 @@ async function telegramMonitorLoop() {
     try {
       await pollAndStoreTelegramUpdates(monitorPollTimeoutSec());
       monitorLastError = "";
+      await delay(150);
     } catch (error) {
       monitorLastError = sanitize(error.message || "monitor error");
       monitorLastErrorAt = new Date().toISOString();
@@ -443,21 +475,26 @@ async function pollAndStoreTelegramUpdates(timeoutSeconds) {
 }
 
 async function pollAndProcessTelegramUpdates(timeoutSeconds) {
-  const updates = await fetchTelegramUpdates(timeoutSeconds);
+  await createBrokerSubscription(monitorSubscriberId(), { startAtEnd: false });
+  const polled = await pollSharedTelegramUpdates(timeoutSeconds);
+  await sendBrokerControlActions(polled.controlActions);
+  const updates = await consumeBrokerUpdates(monitorSubscriberId(), {
+    mode: "monitor",
+    consumerId: currentMonitorConsumer().id,
+    startAtEnd: false
+  });
   const allowedMessages = await buildAllowedMessages(updates);
   await withTelegramStateLock(async () => {
     const state = readTelegramState();
-    advanceUpdateOffset(state, updates);
+    state.updateOffset = Math.max(Number(state.updateOffset || 0), Number(polled.updateOffset || 0));
     appendAllowedMessages(state, allowedMessages);
-    appendApprovalCallbackMessages(state, updates);
     state.lastPollAt = new Date().toISOString();
     monitorLastPollAt = state.lastPollAt;
     if (monitorLastErrorAt) state.lastErrorAt = monitorLastErrorAt;
     writeTelegramState(state);
   });
-  await processChoiceCallbacks(updates);
-  notifyChoiceWaiters();
-  notifyInboxWaiters();
+  await notifyChoiceWaiters();
+  await notifyInboxWaiters();
 }
 
 async function withPollLock(work) {
@@ -475,36 +512,32 @@ async function withPollLock(work) {
   }
 }
 
-async function fetchTelegramUpdates(timeoutSeconds) {
-  return withTelegramUpdateLock(async () => {
-    const offset = await readUpdateOffset();
-    const updates = await telegramApi("getUpdates", {
-      offset,
-      timeout: timeoutSeconds,
-      limit: 100,
-      allowed_updates: ["message", "callback_query"]
-    });
-    await withTelegramStateLock(async () => {
-      const state = readTelegramState();
-      advanceUpdateOffset(state, updates);
-      writeTelegramState(state);
-    });
-    return updates;
+async function pollSharedTelegramUpdates(timeoutSeconds) {
+  const state = readTelegramState();
+  return pollBrokerUpdates(telegramApi, timeoutSeconds, {
+    consumer: currentMonitorConsumer(),
+    allowedChatIds: allowedChatIds(),
+    seedOffset: Number(state.updateOffset || 0)
   });
 }
 
-async function readUpdateOffset() {
-  return withTelegramStateLock(async () => {
-    return Number(readTelegramState().updateOffset || 0);
-  });
-}
-
-function advanceUpdateOffset(state, updates) {
-  for (const update of Array.isArray(updates) ? updates : []) {
-    if (Number.isFinite(update.update_id)) {
-      state.updateOffset = Math.max(Number(state.updateOffset || 0), update.update_id + 1);
-    }
+async function sendBrokerControlActions(actions) {
+  for (const action of Array.isArray(actions) ? actions : []) {
+    if (!action || !allowedChatIds().has(String(action.chatId))) continue;
+    await telegramApi("sendMessage", {
+      chat_id: action.chatId,
+      text: action.text,
+      disable_web_page_preview: true
+    }).catch(() => {});
   }
+}
+
+function currentMonitorConsumer() {
+  return monitorConsumer(relayTargetCwd());
+}
+
+function monitorSubscriberId() {
+  return `monitor:${currentMonitorConsumer().id}`;
 }
 
 async function buildAllowedMessages(updates) {
@@ -661,14 +694,31 @@ async function downloadTelegramFileContent(filePath, localPath, maxBytes) {
     throw new Error(`Telegram file is too large to download: ${contentLength} bytes, max ${maxBytes} bytes`);
   }
 
-  const content = Buffer.from(await response.arrayBuffer());
-  if (content.length > maxBytes) {
-    throw new Error(`Telegram file is too large to download: ${content.length} bytes, max ${maxBytes} bytes`);
-  }
-
   await fs.promises.mkdir(path.dirname(localPath), { recursive: true });
-  await fs.promises.writeFile(localPath, content);
-  return content.length;
+  if (!response.body) throw new Error("Telegram file download returned no body");
+  const tempPath = `${localPath}.${process.pid}.${Date.now()}.tmp`;
+  const handle = await fs.promises.open(tempPath, "w");
+  let total = 0;
+  try {
+    for await (const chunk of response.body) {
+      const buffer = Buffer.from(chunk);
+      total += buffer.length;
+      if (total > maxBytes) {
+        throw new Error(`Telegram file is too large to download: more than ${maxBytes} bytes`);
+      }
+      await handle.write(buffer);
+    }
+  } catch (error) {
+    await handle.close().catch(() => {});
+    await fs.promises.unlink(tempPath).catch(() => {});
+    throw error;
+  }
+  await handle.close();
+  await fs.promises.unlink(localPath).catch((error) => {
+    if (error && error.code !== "ENOENT") throw error;
+  });
+  await fs.promises.rename(tempPath, localPath);
+  return total;
 }
 
 function appendAllowedMessages(state, messages) {
@@ -683,64 +733,24 @@ function appendAllowedMessages(state, messages) {
   }
 }
 
-function appendApprovalCallbackMessages(state, updates) {
-  const allowed = allowedChatIds();
-  const seen = new Set(state.inbox.map((message) => message.id));
-  for (const update of Array.isArray(updates) ? updates : []) {
-    const callback = update.callback_query;
-    const parsed = callback && parseApprovalCallbackData(callback.data);
-    const rawMessage = callback && callback.message;
-    const chatId = rawMessage && rawMessage.chat && String(rawMessage.chat.id);
-    if (!parsed || !chatId || !allowed.has(chatId)) continue;
-    const id = `${Number(update.update_id || 0)}:callback:${String(callback.id || "")}`;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    state.inbox.push({
-      id,
-      updateId: Number(update.update_id || 0),
-      messageId: Number(rawMessage.message_id || 0),
-      chatId,
-      text: approvalInboxText(parsed),
-      date: rawMessage.date ? new Date(Number(rawMessage.date) * 1000).toISOString() : "",
-      receivedAt: new Date().toISOString(),
-      userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : "",
-      from: displayName(rawMessage),
-      approvalCode: parsed.code,
-      approvalDecision: parsed.decision,
-      relayStatus: "skipped_approval",
-      relaySkippedAt: new Date().toISOString()
-    });
-    answerChoiceCallback(callback.id, approvalCallbackAnswerText(parsed.decision)).catch(() => {});
-  }
-  if (state.inbox.length > inboxMaxMessages()) {
-    state.inbox = state.inbox.slice(-inboxMaxMessages());
-  }
+async function takeFirstInboxMessage(chatId, consume) {
+  return withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const index = state.inbox.findIndex((message) => message.chatId === String(chatId));
+    if (index < 0) return null;
+    const [message] = consume ? state.inbox.splice(index, 1) : [state.inbox[index]];
+    if (consume) writeTelegramState(state);
+    return message;
+  });
 }
 
-function approvalInboxText(parsed) {
-  if (parsed.decision === "always_approved") return `always approve ${parsed.code}`;
-  return `${parsed.decision === "approved" ? "approve" : "deny"} ${parsed.code}`;
-}
-
-function approvalCallbackAnswerText(decision) {
-  if (decision === "always_approved") return "항상 승인 선택됨";
-  return decision === "approved" ? "승인 선택됨" : "거부 선택됨";
-}
-
-function takeFirstInboxMessage(chatId, consume) {
-  const state = readTelegramState();
-  const index = state.inbox.findIndex((message) => message.chatId === String(chatId));
-  if (index < 0) return null;
-  const [message] = consume ? state.inbox.splice(index, 1) : [state.inbox[index]];
-  if (consume) writeTelegramState(state);
-  return message;
-}
-
-function clearInboxForChat(chatId) {
-  const state = readTelegramState();
-  const before = state.inbox.length;
-  state.inbox = state.inbox.filter((message) => message.chatId !== String(chatId));
-  if (state.inbox.length !== before) writeTelegramState(state);
+async function clearInboxForChat(chatId) {
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const before = state.inbox.length;
+    state.inbox = state.inbox.filter((message) => message.chatId !== String(chatId));
+    if (state.inbox.length !== before) writeTelegramState(state);
+  });
 }
 
 function resolveChatId(chatId) {
@@ -765,7 +775,7 @@ function telegramAskText(args) {
   return text;
 }
 
-function waitForChoiceResponse({ chatId, messageId, question, choices, requestId, timeoutMs }) {
+function waitForChoiceResponse({ chatId, messageId, question, choices, requestId, subscriberId, timeoutMs }) {
   return new Promise((resolve) => {
     const waiter = {
       chatId: String(chatId),
@@ -773,6 +783,7 @@ function waitForChoiceResponse({ chatId, messageId, question, choices, requestId
       question,
       choices,
       requestId,
+      subscriberId,
       resolve,
       done: false,
       timer: null
@@ -781,7 +792,7 @@ function waitForChoiceResponse({ chatId, messageId, question, choices, requestId
       settleChoiceWaiter(waiter, timeoutChoiceResult({ chatId, messageId, requestId }));
     }, timeoutMs);
     choiceWaiters.add(waiter);
-    notifyChoiceWaiters();
+    void notifyChoiceWaiters();
     void pollChoiceUntilSettled(waiter);
   });
 }
@@ -789,7 +800,15 @@ function waitForChoiceResponse({ chatId, messageId, question, choices, requestId
 async function pollChoiceUntilSettled(waiter) {
   while (!waiter.done) {
     try {
-      await withPollLock(() => pollAndProcessTelegramUpdates(2));
+      const available = await consumeBrokerUpdates(waiter.subscriberId, { startAtEnd: true });
+      await processChoiceCallbacks(available, waiter);
+      await processChoiceTextUpdates(available, waiter);
+      if (waiter.done) continue;
+      const polled = await withPollLock(() => pollSharedTelegramUpdates(2));
+      await sendBrokerControlActions(polled.controlActions);
+      const updates = await consumeBrokerUpdates(waiter.subscriberId, { startAtEnd: true });
+      await processChoiceCallbacks(updates, waiter);
+      await processChoiceTextUpdates(updates, waiter);
     } catch {
       await delay(1000);
     }
@@ -797,8 +816,8 @@ async function pollChoiceUntilSettled(waiter) {
   }
 }
 
-function waitForInboxMessage(chatId, timeoutMs) {
-  const existing = takeFirstInboxMessage(chatId, true);
+async function waitForInboxMessage(chatId, timeoutMs) {
+  const existing = await takeFirstInboxMessage(chatId, true);
   if (existing) return Promise.resolve(existing);
 
   return new Promise((resolve, reject) => {
@@ -813,13 +832,13 @@ function waitForInboxMessage(chatId, timeoutMs) {
       reject(new Error(`Timed out waiting for Telegram reply after ${timeoutMs}ms`));
     }, timeoutMs);
     inboxWaiters.add(waiter);
-    notifyInboxWaiters();
+    void notifyInboxWaiters();
   });
 }
 
-function notifyInboxWaiters() {
+async function notifyInboxWaiters() {
   for (const waiter of Array.from(inboxWaiters)) {
-    const message = takeFirstInboxMessage(waiter.chatId, true);
+    const message = await takeFirstInboxMessage(waiter.chatId, true);
     if (!message) continue;
     clearTimeout(waiter.timer);
     inboxWaiters.delete(waiter);
@@ -827,12 +846,13 @@ function notifyInboxWaiters() {
   }
 }
 
-function notifyChoiceWaiters() {
+async function notifyChoiceWaiters() {
   for (const waiter of Array.from(choiceWaiters)) {
     if (waiter.done) continue;
-    const message = takeMatchingChoiceMessage(waiter);
+    const message = await takeMatchingChoiceMessage(waiter);
     if (!message) continue;
     const choice = findChoiceByText(waiter.choices, message.text);
+    await claimBrokerUpdate(message.updateId, waiter.subscriberId || `choice:${waiter.requestId}`);
     settleChoiceWaiter(waiter, selectedChoiceResult({
       choice,
       chatId: message.chatId,
@@ -845,23 +865,25 @@ function notifyChoiceWaiters() {
   }
 }
 
-function takeMatchingChoiceMessage(waiter) {
-  const state = readTelegramState();
-  const index = state.inbox.findIndex((message) => {
-    return message.chatId === waiter.chatId && Boolean(findChoiceByText(waiter.choices, message.text));
+async function takeMatchingChoiceMessage(waiter) {
+  return withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const index = state.inbox.findIndex((message) => {
+      return message.chatId === waiter.chatId && Boolean(findChoiceByText(waiter.choices, message.text));
+    });
+    if (index < 0) return null;
+    const [message] = state.inbox.splice(index, 1);
+    writeTelegramState(state);
+    return message;
   });
-  if (index < 0) return null;
-  const [message] = state.inbox.splice(index, 1);
-  writeTelegramState(state);
-  return message;
 }
 
-async function processChoiceCallbacks(updates) {
+async function processChoiceCallbacks(updates, targetWaiter) {
   for (const update of Array.isArray(updates) ? updates : []) {
     const callback = update.callback_query;
     if (!callback) continue;
     const parsed = parseChoiceCallbackData(callback.data);
-    if (!parsed) continue;
+    if (!parsed || parsed.requestId !== targetWaiter.requestId) continue;
 
     const waiter = findChoiceWaiter(parsed.requestId, callback);
     if (!waiter || waiter.done) {
@@ -875,6 +897,10 @@ async function processChoiceCallbacks(updates) {
       continue;
     }
 
+    const chatId = callback.message && callback.message.chat && String(callback.message.chat.id);
+    if (!allowedChatIds().has(chatId)) continue;
+    const claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
+    if (!claimed) continue;
     await answerChoiceCallback(callback.id, `선택됨: ${choice.label}`);
     await updateChoiceMessage(callback, waiter.question, choice.label);
     settleChoiceWaiter(waiter, selectedChoiceResult({
@@ -887,6 +913,41 @@ async function processChoiceCallbacks(updates) {
       requestId: waiter.requestId
     }));
   }
+}
+
+async function processChoiceTextUpdates(updates, waiter) {
+  if (waiter.done) return;
+  for (const update of Array.isArray(updates) ? updates : []) {
+    const message = update && update.message;
+    const chatId = message && message.chat && String(message.chat.id);
+    const text = message && (message.text || message.caption);
+    if (!chatId || chatId !== waiter.chatId || !allowedChatIds().has(chatId)) continue;
+    const choice = findChoiceByText(waiter.choices, sanitize(text || ""));
+    if (!choice) continue;
+    const claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
+    if (!claimed) continue;
+    await removeInboxUpdate(update.update_id);
+    settleChoiceWaiter(waiter, selectedChoiceResult({
+      choice,
+      chatId,
+      messageId: waiter.messageId || message.message_id,
+      userId: message.from && message.from.id,
+      timestamp: message.date ? new Date(Number(message.date) * 1000).toISOString() : new Date().toISOString(),
+      source: "text",
+      requestId: waiter.requestId
+    }));
+    return;
+  }
+}
+
+async function removeInboxUpdate(updateId) {
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const next = state.inbox.filter((message) => Number(message.updateId) !== Number(updateId));
+    if (next.length === state.inbox.length) return;
+    state.inbox = next;
+    writeTelegramState(state);
+  });
 }
 
 function findChoiceWaiter(requestId, callback) {
@@ -937,6 +998,7 @@ function settleChoiceWaiter(waiter, result) {
   waiter.done = true;
   clearTimeout(waiter.timer);
   choiceWaiters.delete(waiter);
+  void removeBrokerSubscription(waiter.subscriberId);
   waiter.resolve(result);
 }
 
@@ -973,6 +1035,7 @@ module.exports = {
   parseApprovalDecision,
   _test: {
     buildAllowedMessages,
+    downloadTelegramFileContent,
     formatIncomingMessageText,
     incomingMediaFromMessage
   }

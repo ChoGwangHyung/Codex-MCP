@@ -25,11 +25,13 @@ const configFile = path.join(projectDir, ".codex", "config.toml");
 const envFile = path.join(projectDir, ".codex", "config.toml.env");
 const accessFile = path.join(projectDir, ".codex", "config.toml.access.json");
 const gitignoreFile = path.join(projectDir, ".codex", ".gitignore");
+const hooksFile = path.join(projectDir, ".codex", "hooks.json");
 
 assert.equal(fs.existsSync(configFile), true);
 assert.equal(fs.existsSync(envFile), true);
 assert.equal(fs.existsSync(accessFile), true);
 assert.equal(fs.existsSync(gitignoreFile), true);
+assert.equal(fs.existsSync(hooksFile), true);
 
 const config = fs.readFileSync(configFile, "utf8");
 assert.match(config, /\[features]/);
@@ -37,12 +39,15 @@ assert.match(config, /hooks = true/);
 assert.match(config, /# BEGIN codex-telegram-bridge-mcp server/);
 assert.match(config, /\[mcp_servers\.codex-telegram-bridge]/);
 assert.match(config, /CODEX_TELEGRAM_BRIDGE_ENV_FILE/);
-assert.match(config, /# BEGIN codex-telegram-bridge-mcp permission hook/);
-assert.match(config, /\[\[hooks\.PermissionRequest]]/);
-assert.match(config, /\[\[hooks\.PostToolUse]]/);
-assert.match(config, /\[\[hooks\.Stop]]/);
+assert.doesNotMatch(config, /# BEGIN codex-telegram-bridge-mcp permission hook/);
+assert.doesNotMatch(config, /\[\[hooks\.PermissionRequest]]/);
 assert.doesNotMatch(config, /CODEX_TELEGRAM_BRIDGE_RUNTIME_DIR/);
 assert.doesNotMatch(config, /CODEX_TELEGRAM_BRIDGE_ACCESS_FILE/);
+
+const hooks = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
+assert.equal(hooks.hooks.PermissionRequest.length, 1);
+assert.equal(hooks.hooks.PostToolUse.length, 1);
+assert.equal(hooks.hooks.Stop.length, 1);
 
 const env = fs.readFileSync(envFile, "utf8");
 assert.match(env, /^CODEX_TELEGRAM_BRIDGE_ENABLED=1$/m);
@@ -65,7 +70,9 @@ const second = run();
 assert.match(second, /mcp_config: already current/);
 const repeated = fs.readFileSync(configFile, "utf8");
 assert.equal((repeated.match(/BEGIN codex-telegram-bridge-mcp server/g) || []).length, 1);
-assert.equal((repeated.match(/BEGIN codex-telegram-bridge-mcp permission hook/g) || []).length, 1);
+assert.equal((repeated.match(/BEGIN codex-telegram-bridge-mcp permission hook/g) || []).length, 0);
+const repeatedHooks = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
+assert.equal(repeatedHooks.hooks.PermissionRequest.length, 1);
 const repeatedGitignore = fs.readFileSync(gitignoreFile, "utf8");
 assert.equal((repeatedGitignore.match(/BEGIN codex-telegram-bridge-mcp local files/g) || []).length, 1);
 
@@ -84,7 +91,8 @@ childProcess.execFileSync(process.execPath, [script, "install-project"], {
 const existingConfig = fs.readFileSync(path.join(existingDir, ".codex", "config.toml"), "utf8");
 assert.equal((existingConfig.match(/\[mcp_servers\.codex-telegram-bridge]/g) || []).length, 1);
 assert.equal((existingConfig.match(/BEGIN codex-telegram-bridge-mcp server/g) || []).length, 0);
-assert.equal((existingConfig.match(/BEGIN codex-telegram-bridge-mcp permission hook/g) || []).length, 1);
+assert.equal((existingConfig.match(/BEGIN codex-telegram-bridge-mcp permission hook/g) || []).length, 0);
+assert.equal(fs.existsSync(path.join(existingDir, ".codex", "hooks.json")), true);
 
 const quotedExistingDir = path.join(tempDir, "quoted-existing");
 fs.mkdirSync(path.join(quotedExistingDir, ".codex"), { recursive: true });
@@ -101,19 +109,19 @@ childProcess.execFileSync(process.execPath, [script, "install-project"], {
 const quotedExistingConfig = fs.readFileSync(path.join(quotedExistingDir, ".codex", "config.toml"), "utf8");
 assert.equal((quotedExistingConfig.match(/\[mcp_servers\."codex-telegram-bridge"]/g) || []).length, 1);
 assert.equal((quotedExistingConfig.match(/BEGIN codex-telegram-bridge-mcp server/g) || []).length, 0);
-assert.equal((quotedExistingConfig.match(/BEGIN codex-telegram-bridge-mcp permission hook/g) || []).length, 1);
+assert.equal((quotedExistingConfig.match(/BEGIN codex-telegram-bridge-mcp permission hook/g) || []).length, 0);
+assert.equal(fs.existsSync(path.join(quotedExistingDir, ".codex", "hooks.json")), true);
 
 const globalDir = path.join(tempDir, "global-hook");
 const globalHome = path.join(tempDir, "global-home");
 fs.mkdirSync(path.join(globalDir, ".codex"), { recursive: true });
 fs.mkdirSync(globalHome, { recursive: true });
-fs.writeFileSync(path.join(globalHome, "config.toml"), [
-  "# BEGIN codex-telegram-bridge-mcp permission hook",
-  "[[hooks.Stop]]",
-  'matcher = "*"',
-  "# END codex-telegram-bridge-mcp permission hook",
-  ""
-].join("\n"));
+fs.writeFileSync(path.join(globalHome, "hooks.json"), JSON.stringify({
+  hooks: {
+    PermissionRequest: [{ hooks: [{ type: "command", command: "node codex-permission-telegram.js" }] }],
+    Stop: [{ hooks: [{ type: "command", command: "node codex-stop-telegram.js" }] }]
+  }
+}));
 childProcess.execFileSync(process.execPath, [script, "install-project"], {
   cwd: globalDir,
   env: { ...process.env, CODEX_HOME: globalHome },

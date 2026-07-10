@@ -29,7 +29,7 @@ TUI and should only be enabled on trusted machines.
 ## Telegram Permission Hooks
 
 When the Telegram bridge is configured, it installs a user-level Codex
-`PermissionRequest` hook by default. The hook sends approval requests to
+`PermissionRequest` hook in `hooks.json` by default. The hook sends approval requests to
 Telegram only while Codex is handling a turn that originated from the Telegram
 relay. Any allowlisted approval chat can approve, always approve, or deny those
 Telegram-origin native Codex permission requests. Always approvals are stored by
@@ -48,6 +48,11 @@ final replies only for pending Telegram-origin turns.
 Pending relay replies expire after `CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS`
 milliseconds, defaulting to 24 hours, to prevent stale console relay state from
 causing later CLI-origin turns to be treated as Telegram-origin.
+
+Approval messages intentionally omit raw command and tool input content. They
+show only the tool name, human-readable reason, and cwd. Multiple MCP instances
+using one bot token share a local token-scoped broker journal; use `/sessions`
+and `/use <id>` to control routing, or separate bot tokens for strict isolation.
 
 ## Agentic Bridges
 

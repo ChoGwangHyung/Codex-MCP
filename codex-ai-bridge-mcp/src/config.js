@@ -133,7 +133,7 @@ function validatePreset(preset) {
 function defaultModelForProvider(provider, reviewPreset) {
   if (provider === "claude") {
     return reviewPreset
-      ? (process.env.CODEX_AI_BRIDGE_CLAUDE_MODEL || "claude-fable-5")
+      ? (process.env.CODEX_AI_BRIDGE_CLAUDE_MODEL || "fable")
       : process.env.CODEX_AI_BRIDGE_CLAUDE_MODEL;
   }
   if (provider === "gemini") return process.env.CODEX_AI_BRIDGE_GEMINI_MODEL;

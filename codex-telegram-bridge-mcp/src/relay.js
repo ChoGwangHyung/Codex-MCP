@@ -50,36 +50,42 @@ const RELAY_PENDING_REPLY_MAX = 100;
 function startTelegramRelay() {
   if (relayStarted || !relayEnabled() || !telegramEnabled()) return;
   relayStarted = true;
-  initializeRelayState();
-  scheduleRelayPendingMessages();
+  void initializeRelayState()
+    .then(() => scheduleRelayPendingMessages())
+    .catch((error) => {
+      relayLastError = sanitize(error.message || "relay initialization error");
+      relayLastErrorAt = new Date().toISOString();
+    });
 }
 
-function initializeRelayState() {
-  const state = readTelegramState();
-  const now = new Date().toISOString();
-  state.relay = state.relay && typeof state.relay === "object" ? state.relay : {};
-  if (!state.relay.startedAt) {
-    state.relay.startedAt = now;
-    if (relayIgnoreExisting()) {
-      for (const message of state.inbox) {
-        if (!message.relayStatus) {
-          message.relayStatus = "skipped_existing";
-          message.relaySkippedAt = now;
+async function initializeRelayState() {
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const now = new Date().toISOString();
+    state.relay = state.relay && typeof state.relay === "object" ? state.relay : {};
+    if (!state.relay.startedAt) {
+      state.relay.startedAt = now;
+      if (relayIgnoreExisting()) {
+        for (const message of state.inbox) {
+          if (!message.relayStatus) {
+            message.relayStatus = "skipped_existing";
+            message.relaySkippedAt = now;
+          }
         }
       }
     }
-  }
-  writeTelegramState(state);
+    writeTelegramState(state);
+  });
 }
 
 function scheduleRelayPendingMessages() {
   if (!relayStarted || !relayEnabled()) return;
   if (relayInFlight) return;
   relayInFlight = relayPendingMessages()
-    .catch((error) => {
+    .catch(async (error) => {
       relayLastError = sanitize(error.message || "relay error");
       relayLastErrorAt = new Date().toISOString();
-      updateRelayState({ lastError: relayLastError, lastErrorAt: relayLastErrorAt });
+      await updateRelayState({ lastError: relayLastError, lastErrorAt: relayLastErrorAt });
     })
     .finally(() => {
       relayInFlight = null;
@@ -235,7 +241,7 @@ function shouldSkipRelayMessage(message, state) {
   if (isApprovalDecisionRelayMessage(message, state)) return true;
   if (!relayIgnoreExisting()) return false;
   const startedAt = Date.parse(state.relay && state.relay.startedAt || "");
-  const messageAt = Date.parse(message.receivedAt || message.date || "");
+  const messageAt = Date.parse(message.date || message.receivedAt || "");
   return Number.isFinite(startedAt) && Number.isFinite(messageAt) && messageAt < startedAt;
 }
 
@@ -244,7 +250,7 @@ function skipRelayReason(message, state) {
   if (isApprovalDecisionRelayMessage(message, state)) return "skipped_approval";
   if (relayIgnoreExisting()) {
     const startedAt = Date.parse(state.relay && state.relay.startedAt || "");
-    const messageAt = Date.parse(message.receivedAt || message.date || "");
+    const messageAt = Date.parse(message.date || message.receivedAt || "");
     if (Number.isFinite(startedAt) && Number.isFinite(messageAt) && messageAt < startedAt) {
       return "skipped_existing";
     }
@@ -269,10 +275,12 @@ function markRelaySkipped(message, reason) {
   message.relaySkippedAt = new Date().toISOString();
 }
 
-function updateRelayState(fields) {
-  const state = readTelegramState();
-  state.relay = { ...(state.relay || {}), ...fields };
-  writeTelegramState(state);
+async function updateRelayState(fields) {
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    state.relay = { ...(state.relay || {}), ...fields };
+    writeTelegramState(state);
+  });
 }
 
 async function telegramRelayStatus() {

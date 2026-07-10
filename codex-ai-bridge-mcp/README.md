@@ -134,7 +134,8 @@ Provider reasoning controls:
 
 Precedence:
 
-- Claude model: task `model` > `CODEX_AI_BRIDGE_CLAUDE_MODEL` > unset.
+- Claude model: task `model` > `CODEX_AI_BRIDGE_CLAUDE_MODEL` > review preset
+  alias `fable` (otherwise unset).
 - Gemini model: task `model` > `CODEX_AI_BRIDGE_GEMINI_MODEL` > Gemini CLI default.
 - Antigravity model: task `model` > `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` > Antigravity CLI default.
 - Claude effort: task `effort` > `CODEX_AI_BRIDGE_CLAUDE_EFFORT` > unset.
@@ -148,10 +149,10 @@ Gemini CLI and Antigravity CLI do not expose an equivalent flag, so
 `gemini_task` and `antigravity_task` accept the field for cross-provider request
 compatibility but do not emit a provider argv flag for it. A one-shot review
 gate usually means one bridge tool call, not necessarily `--max-turns 1`; wide
-Fable 5/max reviews often need about `4`. Use `1` only for strict single-turn
+Fable/max reviews often need about `4`. Use `1` only for strict single-turn
 probes.
 
-Gemini and Antigravity tasks do not accept `effort`. Antigravity CLI 1.0.7
+Gemini and Antigravity tasks do not accept `effort`. Antigravity CLI 1.1.0
 exposes `--model` but no documented `--effort` or reasoning-effort flag. When
 Antigravity exposes reasoning variants through model labels, pass the exact
 label through `model`, for example `Gemini 3.5 Flash (Medium)` or
@@ -181,7 +182,8 @@ Some Google documentation writes these in descriptive form, for example
 ## Review Preset
 
 Set `"preset": "review"` for the default long review profile. For Claude this
-uses `model: "claude-fable-5"`, `effort: "max"`, `timeoutMs: 900000`, and
+uses the rolling model alias `model: "fable"`, `effort: "max"`,
+`timeoutMs: 900000`, and
 `syncBudgetMs: 120000`, and `maxTurns: 4` unless those fields are explicitly
 supplied. In `cross_review`, `maxTurns` is applied to the Claude leg and is
 accepted by Gemini and Antigravity legs for schema compatibility.
@@ -195,7 +197,7 @@ Antigravity print mode has a timeout aligned with the bridge hard timeout. If
 `timeoutMs` is `0`, the default print timeout is `15m` unless
 `CODEX_AI_BRIDGE_ANTIGRAVITY_PRINT_TIMEOUT` is set.
 
-Antigravity 1.0.7 on Windows may complete print mode with exit code `0` while
+Antigravity 1.0.7 on Windows was observed completing print mode with exit code `0` while
 leaving stdout empty. To make MCP results usable, the bridge asks Antigravity to
 wrap its final answer in per-call capture markers and, when stdout is empty,
 recovers that answer from Antigravity's local conversation store. If capture
@@ -236,7 +238,7 @@ tool can return a `jobId` and let you poll with `ai_bridge_job`.
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Default Claude CLI internal turn limit. This is not the number of bridge calls. Use `4` for broad one-call review gates; use `1` only for strict single-turn probes. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Hard provider timeout. Defaults to `900000` ms. Set to `0` to disable the hard timeout. |
 | `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `120000` ms. Set to `0` to wait until the provider exits. |
-| `CODEX_AI_BRIDGE_JOB_CHECK_MS` | Interval for updating running job liveness status. Defaults to `300000` ms. |
+| `CODEX_AI_BRIDGE_JOB_CHECK_MS` | Interval for updating the in-memory job heartbeat timestamp and MCP progress notification. Defaults to `300000` ms. It is not a provider health probe. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | How long completed in-memory jobs are retained. Defaults to one hour. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Override Gemini CLI command. |
 | `CODEX_AI_BRIDGE_GEMINI_MODEL` | Default Gemini model passed as `--model` unless the tool call supplies `model`. Gemini has no bridge-level `effort`; choose model capability instead. |
@@ -257,7 +259,9 @@ Provider locks prevent multiple Codex sessions in the same workspace from
 invoking the same external provider CLI at the same time. Different workspaces
 use different lock keys by default, so two projects can ask Claude, Gemini, or
 Antigravity at the same time without one session spending its MCP tool budget
-waiting for the other project. Active locks are heartbeated, dead owner
+waiting for the other project. Workspace lock paths are canonicalized on
+Windows, including path case, so the same workspace cannot accidentally get
+two lock keys. Active locks are heartbeated, dead owner
 processes are cleaned up, and timed-out Windows provider calls terminate the
 process tree to avoid
 leaving Claude/Gemini/Antigravity children running after the bridge releases
@@ -269,15 +273,20 @@ response wait time. If `syncBudgetMs` is `0`, the tool waits until the provider
 exits and sends MCP progress notifications at the job check interval when the
 client provides a progress token. If a positive `syncBudgetMs` is reached first,
 the tool returns a `jobId` and the provider continues in the background. Poll it
-with `ai_bridge_job`; running jobs include `lastCheckedAt`, `elapsedMs`, and the
-check interval plus the remaining hard timeout. When `timeoutMs > 0` and
+with `ai_bridge_job`; running jobs include queue/provider state,
+`lastCheckedAt`, `elapsedMs`, the heartbeat interval, and the remaining hard
+timeout. The hard-timeout countdown starts only after the provider process
+launches, not while waiting for a provider lock. Completed jobs report a
+machine-readable `status` of `completed`, `failed`, or `timeout`, plus provider
+PID and elapsed time when available. Jobs are kept in the current MCP process;
+restarting that MCP loses its background job registry. When `timeoutMs > 0` and
 `syncBudgetMs >= timeoutMs`, the bridge automatically lowers `syncBudgetMs` and
 adds a warning so the returned `jobId` still has time to be polled before the
 hard timeout.
 
 Avoid passing the same positive value for `timeoutMs` and `syncBudgetMs`, such
 as `240000` and `240000`. That makes the foreground budget end at the same time
-as the hard kill deadline. For long Claude Fable 5/max reviews, prefer either
+as the hard kill deadline. For long Claude Fable/max reviews, prefer either
 `timeoutMs: 900000, syncBudgetMs: 120000` or `timeoutMs: 0, syncBudgetMs:
 120000`. Set `"background": true` to return a `jobId` immediately.
 

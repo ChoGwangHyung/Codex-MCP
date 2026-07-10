@@ -86,6 +86,7 @@ This creates or updates:
 
 ```text
 <ProjectRoot>/.codex/config.toml
+<ProjectRoot>/.codex/hooks.json
 <ProjectRoot>/.codex/config.toml.env
 <ProjectRoot>/.codex/config.toml.access.json
 <ProjectRoot>/.codex/.gitignore
@@ -93,8 +94,8 @@ This creates or updates:
 
 If the user-level Codex config already has the managed Telegram hook,
 `install-project` reuses it and does not add a duplicate local hook. Otherwise
-it adds a local hook block and sets `CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=local`
-in the project env file.
+it adds the hook definitions to the local `.codex/hooks.json` and sets
+`CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=local` in the project env file.
 
 Manual equivalent for `.codex/config.toml`:
 
@@ -115,6 +116,8 @@ CODEX_TELEGRAM_BRIDGE_ENABLED=1
 TELEGRAM_BOT_TOKEN=<bot-token>
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 CODEX_TELEGRAM_CODEX_RELAY_IGNORE_EXISTING=1
+# Set to 0 to keep receive/send tools but disable automatic Codex relay.
+# CODEX_TELEGRAM_CODEX_RELAY_ENABLED=0
 CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # Optional stale relay reply guard; default is 24 hours.
 # CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
@@ -203,8 +206,10 @@ reloads the saved environment and access files.
 
 When enabled and configured, the server starts a Telegram `getUpdates` monitor.
 It stores allowlisted text messages in a capped runtime inbox, downloads
-allowlisted inbound photos/documents into the runtime download directory, advances
-a shared offset, and ignores non-allowlisted chats. Photo and file inbox entries
+allowlisted inbound photos/documents into the runtime download directory,
+advances a bot-token-scoped broker offset, and ignores non-allowlisted chats.
+Downloads stream to a temporary local file and stop as soon as
+`CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES` is exceeded. Photo and file inbox entries
 include the local file path so Codex can inspect the downloaded file.
 
 Read captured messages:
@@ -340,6 +345,9 @@ the active Codex session by default. Console mode is the default on Windows:
 CODEX_TELEGRAM_CODEX_RELAY_MODE=console
 ```
 
+Set `CODEX_TELEGRAM_CODEX_RELAY_ENABLED=0` to keep Telegram MCP tools enabled
+without injecting incoming messages into Codex.
+
 Supported relay modes:
 
 | Mode | Use Case |
@@ -385,15 +393,15 @@ approval prompt. The hook sends the request to Telegram and returns Codex's
 `allow` or `deny` decision from the Telegram reply.
 
 When the MCP server starts and Telegram is fully configured, it automatically
-installs Codex `PermissionRequest`, `PostToolUse`, and `Stop` hooks. By default it uses
-the user-level Codex config at `$CODEX_HOME/config.toml` or
-`%USERPROFILE%/.codex/config.toml`, which makes the hook available to existing
-Codex projects without per-project setup.
+installs Codex `PermissionRequest`, `PostToolUse`, and `Stop` hooks. It enables
+`[features].hooks` in the user-level `config.toml` and stores definitions in
+`$CODEX_HOME/hooks.json` or `%USERPROFILE%/.codex/hooks.json`, which makes the
+hooks available to existing Codex projects without per-project setup.
 
 Set `CODEX_TELEGRAM_PERMISSION_HOOK_SCOPE=local` to install the managed hook
-block into the current project's `.codex/config.toml` instead. Local scope is
-cleaner when you only want Telegram approval in projects that explicitly enable
-this MCP server.
+definitions into the current project's `.codex/hooks.json` instead. Local scope
+is cleaner when you only want Telegram approval in projects that explicitly
+enable this MCP server.
 
 If the current Codex process loaded config before the hook was installed,
 restart or resume Codex once. After that, MCP connection plus the user-level
@@ -401,77 +409,23 @@ hook is enough for native permission requests to go through Telegram.
 
 Set `CODEX_TELEGRAM_PERMISSION_HOOK_AUTO_INSTALL=0` to disable automatic hook
 installation. The installer preserves Codex `/hooks` trust state when refreshing
-the managed block, so reviewing a hook should not be undone by MCP restart. To
+unchanged definitions, so reviewing a hook should not be undone by MCP restart.
+The one-time migration from inline TOML to `hooks.json`, or a package update
+that changes a command, can require one new `/hooks` review. To
 inspect or manually install the same hook, print the snippet:
 
 ```powershell
 node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/telegram-configure.js hook-snippet
 ```
 
-The command prints a TOML snippet like this:
-
-```toml
-[features]
-hooks = true
-
-[[hooks.PermissionRequest]]
-matcher = "*"
-
-[[hooks.PermissionRequest.hooks]]
-type = "command"
-command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
-timeout = 330
-statusMessage = "Waiting for Telegram approval"
-
-[[hooks.PostToolUse]]
-matcher = "*"
-
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-permission-telegram.js"
-timeout = 30
-statusMessage = "Updating Telegram approval state"
-
-[[hooks.Stop]]
-matcher = "*"
-
-[[hooks.Stop.hooks]]
-type = "command"
-command = "node <Codex-MCP>/codex-telegram-bridge-mcp/scripts/codex-stop-telegram.js"
-timeout = 30
-statusMessage = "Sending Telegram reply"
-```
-
-If installed globally from npm, use the package binary:
-
-```toml
-[[hooks.PermissionRequest]]
-matcher = "*"
-
-[[hooks.PermissionRequest.hooks]]
-type = "command"
-command = "codex-telegram-permission-hook"
-timeout = 330
-statusMessage = "Waiting for Telegram approval"
-
-[[hooks.PostToolUse]]
-matcher = "*"
-
-[[hooks.PostToolUse.hooks]]
-type = "command"
-command = "codex-telegram-permission-hook"
-timeout = 30
-statusMessage = "Updating Telegram approval state"
-
-[[hooks.Stop]]
-matcher = "*"
-
-[[hooks.Stop.hooks]]
-type = "command"
-command = "codex-telegram-stop-hook"
-timeout = 30
-statusMessage = "Sending Telegram reply"
-```
+The command prints the small `config.toml` feature section and the complete
+`hooks.json` object. The installer merges only the Telegram handlers and
+preserves unrelated JSON hooks. Existing inline Telegram blocks are removed
+during migration while unrelated config tables and Codex hook trust state are
+preserved. Global scope prefers the stable installed package binaries instead
+of version-specific npm file paths, so normal package upgrades do not change
+the hook command hash. Local scope and source checkouts fall back to absolute
+script paths when the package binaries are unavailable.
 
 Behavior:
 
@@ -499,7 +453,8 @@ Behavior:
   Telegram relay. Normal CLI-origin turns are ignored.
 - Telegram shows `승인`, `항상 승인`, and `거부` inline buttons. The internal
   request code is kept in the callback payload and is not shown in the message
-  body. Buttons are removed after the first accepted response.
+  body. The command/tool input is also omitted; only the tool name, reason, and
+  cwd are shown. Buttons are removed after the first accepted response.
 - `항상 승인` stores a bridge-side approval for the same session, cwd, tool name,
   and exact tool input signature. It does not modify Codex's global permission
   configuration. Remove the Telegram runtime state file, or set
@@ -540,6 +495,7 @@ Project-local state:
 ```text
 <project>/.codex/
 ├─ config.toml
+├─ hooks.json
 ├─ config.toml.env
 ├─ config.toml.env.example
 ├─ config.toml.access.json
@@ -563,15 +519,19 @@ Access JSON stores:
 ## Multiple MCP Instances
 
 Several Codex sessions can run this MCP server with the same bot token. The
-bridge uses a token-scoped cross-process lock around Telegram `getUpdates`, and
-a state-file lock around local state writes, so multiple monitors do not collide
-with Telegram long polling or corrupt the runtime state file.
+bridge uses a token-scoped cooperative broker: one process polls Telegram at a
+time, every update is first stored in a shared local journal, and request-specific
+approval/choice subscribers read independently. This prevents another MCP
+process from stealing a callback and prevents state-file corruption.
 
-A Telegram update is still consumed once per bot token. If separate Codex
-sessions use the same bot token but different runtime state files, only the
-instance that receives an update will relay that specific message. Use the same
-runtime state file for one shared relay target, or separate bot tokens/chats
-when each session needs independent routing.
+Normal Telegram messages are routed to one active Codex project per chat. Send
+`/sessions` to the bot to list live targets and `/use <id>` to select one. The
+route stays active while that target remains live; if it disappears, the next
+eligible monitor becomes active. `/sessions` and `/use` are broker control
+commands and are not injected into Codex. While `telegram_ask` or a permission
+approval is waiting for text fallback, that chat is temporarily routed to the
+requesting project and returns to its prior active route afterward. Separate bot tokens are still the
+strongest isolation when chats must never share routing state.
 
 ## Security Notes
 

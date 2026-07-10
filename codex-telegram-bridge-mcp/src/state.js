@@ -76,13 +76,17 @@ function telegramStateLockPath() {
 }
 
 function telegramUpdateLockPath() {
-  const tokenHash = crypto
+  const tokenHash = telegramTokenHash();
+  const dir = path.join(process.env.LOCALAPPDATA || os.tmpdir(), "CodexTelegramBridge", "locks");
+  return path.join(dir, `updates-${tokenHash}.lock`);
+}
+
+function telegramTokenHash() {
+  return crypto
     .createHash("sha256")
     .update(String(process.env.TELEGRAM_BOT_TOKEN || "missing-token"))
     .digest("hex")
     .slice(0, 16);
-  const dir = path.join(process.env.LOCALAPPDATA || os.tmpdir(), "CodexTelegramBridge", "locks");
-  return path.join(dir, `updates-${tokenHash}.lock`);
 }
 
 async function removeStaleLock(lock) {
@@ -153,5 +157,7 @@ module.exports = {
   writeTelegramState,
   normalizeTelegramState,
   withTelegramStateLock,
-  withTelegramUpdateLock
+  withTelegramUpdateLock,
+  withFileLock,
+  telegramTokenHash
 };

@@ -7,9 +7,10 @@ const path = require("node:path");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-permission-hook-"));
 process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
-process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
+process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
 process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-state.json");
+process.env.CODEX_TELEGRAM_BROKER_STATE_FILE = path.join(tempDir, "broker-state.json");
 
 const {
   buildPermissionApprovalRequest,
@@ -63,8 +64,10 @@ const hookInput = {
 
 const request = buildPermissionApprovalRequest(hookInput);
 assert.match(request.title, /Bash/);
-assert.match(request.message, /git push origin main/);
 assert.match(request.message, /Need to push changes/);
+assert.match(request.message, /D:\/repo/);
+assert.doesNotMatch(request.message, /git push origin main/);
+assert.doesNotMatch(request.message, /Command:|Input:/);
 
 const yesNoCommandApprovalInput = {
   hookEventName: "permissionRequest",
@@ -76,9 +79,9 @@ const yesNoCommandApprovalInput = {
 };
 const yesNoRequest = buildPermissionApprovalRequest(yesNoCommandApprovalInput);
 assert.match(yesNoRequest.title, /shell_command/);
-assert.match(yesNoRequest.message, /powershell -NoProfile/);
 assert.match(yesNoRequest.message, /Run a smoke-test command/);
-assert.match(yesNoRequest.message, /session-yes-no/);
+assert.doesNotMatch(yesNoRequest.message, /powershell -NoProfile/);
+assert.doesNotMatch(yesNoRequest.message, /session-yes-no/);
 
 function seedTelegramOrigin(input, id = "relay-origin") {
   const state = readTelegramState();
@@ -105,6 +108,7 @@ assert.equal(allowOutput.hookSpecificOutput.decision.behavior, "allow");
 let approvalCallbackData = "";
 let approvalButtonIndex = 0;
 let replied = false;
+let nextUpdateId = 10;
 const apiCalls = [];
 async function telegramApiFn(method, payload) {
   apiCalls.push({ method, payload });
@@ -117,7 +121,7 @@ async function telegramApiFn(method, payload) {
   if (method === "getUpdates" && approvalCallbackData && !replied) {
     replied = true;
     return [{
-      update_id: 10,
+      update_id: nextUpdateId++,
       callback_query: {
         id: "callback-1",
         from: { id: 777, username: "tester" },
@@ -152,6 +156,35 @@ async function telegramApiFn(method, payload) {
   assert.ok(apiCalls.some((call) => call.method === "editMessageReplyMarkup" && call.payload.reply_markup && call.payload.reply_markup.inline_keyboard.length === 0));
   assert.ok(apiCalls.some((call) => call.method === "editMessageText" && call.payload.reply_markup && call.payload.reply_markup.inline_keyboard.length === 0));
   assert.ok(apiCalls.some((call) => call.method === "editMessageReplyMarkup" && call.payload.message_id === 20));
+
+  process.env.CODEX_TELEGRAM_BROKER_STATE_FILE = path.join(tempDir, "first-response-broker.json");
+  let firstResponseMarkup;
+  let firstResponseDelivered = false;
+  const firstResponseApi = async (method, payload) => {
+    if (method === "sendMessage" && payload.reply_markup) {
+      firstResponseMarkup = payload.reply_markup;
+      return { message_id: 30 };
+    }
+    if (method === "getUpdates" && firstResponseMarkup && !firstResponseDelivered) {
+      firstResponseDelivered = true;
+      return [
+        callbackUpdate(500, "first-approve", firstResponseMarkup.inline_keyboard[0][0].callback_data),
+        callbackUpdate(501, "later-deny", firstResponseMarkup.inline_keyboard[0][2].callback_data)
+      ];
+    }
+    return [];
+  };
+  const firstResponse = await requestTelegramPermissionApproval({
+    chatIds: ["12345"],
+    title: request.title,
+    message: request.message,
+    timeoutMs: 5000,
+    telegramApiFn: firstResponseApi,
+    now: () => Date.now()
+  });
+  assert.equal(firstResponse.decision, "approved");
+
+  process.env.CODEX_TELEGRAM_BROKER_STATE_FILE = path.join(tempDir, "broker-state.json");
 
   approvalCallbackData = "";
   replied = false;
@@ -227,3 +260,19 @@ async function telegramApiFn(method, payload) {
   console.error(error);
   process.exit(1);
 });
+
+function callbackUpdate(updateId, callbackId, data) {
+  return {
+    update_id: updateId,
+    callback_query: {
+      id: callbackId,
+      from: { id: 777 },
+      data,
+      message: {
+        message_id: 30,
+        date: Math.floor(Date.now() / 1000),
+        chat: { id: 12345 }
+      }
+    }
+  };
+}

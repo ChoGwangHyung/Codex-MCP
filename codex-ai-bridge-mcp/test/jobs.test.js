@@ -22,10 +22,12 @@ function delay(ms) {
 
   assert.equal(await waitForJob(slow, 20), false);
   assert.match(formatJobStatus(slow.jobId), /status: running/);
-  assert.match(formatJobStatus(slow.jobId), /checkIntervalMs:/);
+  assert.match(formatJobStatus(slow.jobId), /heartbeatIntervalMs:/);
+  assert.match(formatJobStatus(slow.jobId), /providerStatus: waiting_for_lock/);
   assert.match(formatJobStatus(slow.jobId), /hardTimeoutMs: disabled/);
   assert.equal(await waitForJob(slow, 1000), true);
-  assert.equal(formatJobStatus(slow.jobId), "claude result:\ndone");
+  assert.match(formatJobStatus(slow.jobId), /status: completed/);
+  assert.match(formatJobStatus(slow.jobId), /claude result:\ndone/);
 
   const noBudgetLimit = startJob("claude", {
     cwd: process.cwd(),
@@ -35,7 +37,21 @@ function delay(ms) {
     return "claude result:\nwaited";
   });
   assert.equal(await waitForJob(noBudgetLimit, 0), true);
-  assert.equal(formatJobStatus(noBudgetLimit.jobId), "claude result:\nwaited");
+  assert.match(formatJobStatus(noBudgetLimit.jobId), /status: completed/);
+  assert.match(formatJobStatus(noBudgetLimit.jobId), /claude result:\nwaited/);
+
+  const providerFailure = startJob("claude", {
+    cwd: process.cwd(),
+    timeoutMs: 10000
+  }, async (job) => {
+    const { markJobChecked } = require("../src/jobs.js");
+    markJobChecked(job, { pid: process.pid });
+    return { ok: false, status: "timeout", failureKind: "hard_timeout", text: "claude failed: hard timeout", pid: process.pid, elapsedMs: 25 };
+  });
+  assert.equal(await waitForJob(providerFailure, 1000), true);
+  assert.match(formatJobStatus(providerFailure.jobId), /status: timeout/);
+  assert.match(formatJobStatus(providerFailure.jobId), /failureKind: hard_timeout/);
+  assert.match(formatJobStatus(providerFailure.jobId), /providerElapsedMs: 25/);
 
   const failed = startJob("gemini", {
     cwd: process.cwd(),

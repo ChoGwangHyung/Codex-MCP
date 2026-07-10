@@ -11,7 +11,7 @@ fs.writeFileSync(uploadPath, "hello from codex", "utf8");
 
 process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
 process.env.CODEX_TELEGRAM_MONITOR_ENABLED = "0";
-process.env.TELEGRAM_BOT_TOKEN = "123456:abcdefghijklmnopqrstuvwxyz";
+process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
 process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-state.json");
 
@@ -33,7 +33,7 @@ global.fetch = async (url, options) => {
       assert.equal(await document.text(), "hello from codex");
     } else {
       const payload = JSON.parse(options.body || "{}");
-      assert.equal(payload.document, "123456:abcdefghijklmnopqrstuvwxyz");
+      assert.equal(payload.document, "telegram-file-id");
     }
     return telegramResponse({ message_id: 77 });
   }
@@ -82,7 +82,7 @@ function telegramResponse(result) {
   assert.equal(photoResult.fileName, "photo.jpg");
 
   const fileIdResult = JSON.parse(await telegramSendFile({
-    fileId: "123456:abcdefghijklmnopqrstuvwxyz"
+    fileId: "telegram-file-id"
   }));
   assert.equal(fileIdResult.status, "sent");
   assert.equal(fileIdResult.source, "file_id");

@@ -44,10 +44,12 @@ Codex-MCP/
 
 ```powershell
 npm run check
+npm run release:check
 ```
 
-검증은 공개 전이나 수정 후 권장하는 smoke check입니다. 일반적인 로컬 실행에
-필수는 아닙니다.
+`check`는 패키지 테스트를 실행합니다. `release:check`는 npm tarball 포함 파일,
+JSON-RPC 초기화와 `tools/list`, diff 공백 오류, 시크릿과 개인 환경 문자열까지
+확인합니다. CI도 Windows/Linux와 Node.js 20/22 조합으로 같은 검증을 수행합니다.
 
 ## 보안
 

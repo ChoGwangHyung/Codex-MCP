@@ -10,7 +10,8 @@
     "codex-done-notifier"
   ],
   "scripts": {
-    "check": "npm run check --workspaces --if-present"
+    "check": "npm run check --workspaces --if-present",
+    "release:check": "node .agents/skills/codex-mcp-release-check/scripts/release-check.js"
   },
   "engines": {
     "node": ">=20"

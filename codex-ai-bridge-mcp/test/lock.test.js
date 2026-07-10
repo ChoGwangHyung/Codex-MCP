@@ -11,12 +11,17 @@ process.env.CODEX_AI_BRIDGE_LOCK_STALE_MS = "1000";
 
 const {
   acquireProviderLock,
+  canonicalWorkspaceScope,
   providerLockPath,
   releaseProviderLock
 } = require("../src/lock.js");
 const { DEFAULT_TIMEOUT_MS } = require("../src/constants.js");
 
 assert.equal(DEFAULT_TIMEOUT_MS, 900000);
+assert.equal(canonicalWorkspaceScope(process.cwd()), canonicalWorkspaceScope(path.resolve(process.cwd(), ".")));
+if (process.platform === "win32") {
+  assert.equal(providerLockPath("claude", process.cwd()), providerLockPath("claude", process.cwd().toUpperCase()));
+}
 
 (async () => {
   const first = await acquireProviderLock("claude", 1000);

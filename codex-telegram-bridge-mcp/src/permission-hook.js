@@ -11,9 +11,16 @@ const {
 const {
   readTelegramState,
   writeTelegramState,
-  withTelegramStateLock,
-  withTelegramUpdateLock
+  withTelegramStateLock
 } = require("./state.js");
+const {
+  claimBrokerUpdate,
+  consumeBrokerUpdates,
+  createBrokerSubscription,
+  monitorConsumer,
+  pollBrokerUpdates,
+  removeBrokerSubscription
+} = require("./broker.js");
 const { telegramApi } = require("./telegram.js");
 const {
   approvalReplyMarkup,
@@ -76,7 +83,7 @@ async function handlePermissionHook(input, options = {}) {
   );
   const request = buildPermissionApprovalRequest(input);
   const approvalKey = permissionApprovalKey(input);
-  if (hasAlwaysApproval(approvalKey)) {
+  if (await hasAlwaysApproval(approvalKey)) {
     return permissionDecisionOutput("allow");
   }
   const result = await requestTelegramPermissionApproval({
@@ -89,7 +96,7 @@ async function handlePermissionHook(input, options = {}) {
   });
 
   if (result.decision === "always_approved") {
-    rememberAlwaysApproval(input, result);
+    await rememberAlwaysApproval(input, result);
     return permissionDecisionOutput("allow");
   }
   if (result.decision === "approved") {
@@ -100,7 +107,7 @@ async function handlePermissionHook(input, options = {}) {
   }
 
   if (permissionTimeoutBehavior() === "deny") {
-    forgetPendingApproval(approvalKey);
+    await forgetPendingApproval(approvalKey);
     return permissionDecisionOutput("deny", "Timed out waiting for Telegram approval.");
   }
   return systemMessageOutput("Telegram permission approval timed out; falling back to the normal Codex approval prompt.");
@@ -120,7 +127,7 @@ async function handlePostToolUseHook(input, options = {}) {
     return "";
   }
   const approvalKey = permissionApprovalKey(input);
-  const pending = takePendingApproval(approvalKey);
+  const pending = await takePendingApproval(approvalKey);
   if (!pending) return "";
   await markApprovalHandledByCli(options.telegramApiFn || telegramApi, pending);
   return "";
@@ -158,21 +165,12 @@ function formatPermissionDetails(input) {
   const toolInput = normalizedToolInput(input);
   const toolName = normalizedToolName(input);
   const description = extractDescription(input, toolInput);
-  const command = extractCommand(input, toolInput);
   const cwd = extractCwd(input, toolInput);
   const lines = [
     `Tool: ${toolName}`,
     description ? `Reason: ${description}` : "",
-    cwd ? `Cwd: ${cwd}` : "",
-    extractSessionId(input) ? `Session: ${extractSessionId(input)}` : "",
-    extractTurnId(input) ? `Turn: ${extractTurnId(input)}` : ""
+    cwd ? `Cwd: ${cwd}` : ""
   ].filter(Boolean);
-
-  if (command) {
-    lines.push("", "Command:", truncateBlock(command, 1600));
-  } else {
-    lines.push("", "Input:", truncateBlock(JSON.stringify(toolInput, null, 2), 1600));
-  }
   return truncateTelegramText(lines.join("\n"));
 }
 
@@ -309,12 +307,6 @@ function extractTurnId(input) {
   return singleLine(input && (input.turn_id || input.turnId) || "");
 }
 
-function truncateBlock(text, maxLength) {
-  const value = sanitize(text);
-  if (value.length <= maxLength) return value;
-  return `${value.slice(0, maxLength - 20)}\n...[truncated]`;
-}
-
 async function requestTelegramPermissionApproval({
   chatIds,
   title,
@@ -325,32 +317,60 @@ async function requestTelegramPermissionApproval({
   now
 }) {
   const code = createApprovalCode();
+  const subscriberId = `permission:${code}`;
   const startedAt = now();
   await syncTelegramOffset(telegramApiFn);
-  const sentMessages = await sendApprovalRequest(telegramApiFn, chatIds, { title, message, code, approvalKey });
-  rememberPendingApproval({ approvalKey, code, title, message, sentMessages, timeoutMs });
+  await createBrokerSubscription(subscriberId, {
+    startAtEnd: true,
+    reset: true,
+    routeConsumerId: monitorConsumer(process.cwd()).id,
+    chatIds,
+    interceptMessages: true,
+    expiresInMs: timeoutMs
+  });
+  try {
+    const sentMessages = await sendApprovalRequest(telegramApiFn, chatIds, { title, message, code, approvalKey });
+    await rememberPendingApproval({ approvalKey, code, title, message, sentMessages, timeoutMs });
+    const deadline = now() + timeoutMs;
+    while (now() < deadline) {
+      const inboxDecision = await takeMatchingInboxDecision(chatIds, code, startedAt);
+      if (inboxDecision) {
+        await claimBrokerUpdate(inboxDecision.updateId, subscriberId);
+        await sendApprovalResult(telegramApiFn, inboxDecision, sentMessages);
+        await forgetPendingApproval(approvalKey);
+        return inboxDecision;
+      }
 
-  const deadline = now() + timeoutMs;
-  while (now() < deadline) {
-    const inboxDecision = await takeMatchingInboxDecision(chatIds, code, startedAt);
-    if (inboxDecision) {
-      await sendApprovalResult(telegramApiFn, inboxDecision, sentMessages);
-      forgetPendingApproval(approvalKey);
-      return inboxDecision;
+      const brokerDecision = await storeUpdatesAndFindDecision(
+        await consumeBrokerUpdates(subscriberId, { startAtEnd: true }),
+        chatIds,
+        code,
+        startedAt
+      );
+      if (brokerDecision) {
+        await claimBrokerUpdate(brokerDecision.updateId, subscriberId);
+        await sendApprovalResult(telegramApiFn, brokerDecision, sentMessages);
+        await forgetPendingApproval(approvalKey);
+        return brokerDecision;
+      }
+
+      const remainingMs = Math.max(1000, deadline - now());
+      await pollSharedTelegramUpdates(telegramApiFn, Math.min(DEFAULT_POLL_TIMEOUT_SEC, Math.ceil(remainingMs / 1000)));
+      const updates = await consumeBrokerUpdates(subscriberId, { startAtEnd: true });
+      const updateDecision = await storeUpdatesAndFindDecision(updates, chatIds, code, startedAt);
+      if (updateDecision) {
+        await claimBrokerUpdate(updateDecision.updateId, subscriberId);
+        await sendApprovalResult(telegramApiFn, updateDecision, sentMessages);
+        await forgetPendingApproval(approvalKey);
+        return updateDecision;
+      }
     }
 
-    const remainingMs = Math.max(1000, deadline - now());
-    const updates = await fetchTelegramUpdates(telegramApiFn, Math.min(DEFAULT_POLL_TIMEOUT_SEC, Math.ceil(remainingMs / 1000)));
-    const updateDecision = await storeUpdatesAndFindDecision(updates, chatIds, code, startedAt);
-    if (updateDecision) {
-      await sendApprovalResult(telegramApiFn, updateDecision, sentMessages);
-      forgetPendingApproval(approvalKey);
-      return updateDecision;
-    }
+    await sendApprovalTimeout(telegramApiFn, chatIds, sentMessages);
+    return { decision: "timeout", code };
+  } finally {
+    await removeBrokerSubscription(subscriberId);
   }
-
-  await sendApprovalTimeout(telegramApiFn, chatIds, sentMessages);
-  return { decision: "timeout", code };
 }
 
 async function sendApprovalRequest(telegramApiFn, chatIds, request) {
@@ -503,36 +523,18 @@ async function markApprovalHandledByCli(telegramApiFn, pending) {
 
 async function syncTelegramOffset(telegramApiFn) {
   for (let drainCount = 0; drainCount < 100; drainCount += 1) {
-    const updates = await fetchTelegramUpdates(telegramApiFn, 0);
-    if (!Array.isArray(updates) || updates.length < 100) break;
+    const result = await pollSharedTelegramUpdates(telegramApiFn, 0);
+    if (!Array.isArray(result.updates) || result.updates.length < 100) break;
   }
 }
 
-async function fetchTelegramUpdates(telegramApiFn, timeoutSeconds) {
-  return withTelegramStateLock(async () => {
-    return Number(readTelegramState().updateOffset || 0);
-  }).then((offset) => withTelegramUpdateLock(async () => {
-    const updates = await telegramApiFn("getUpdates", {
-      offset,
-      timeout: timeoutSeconds,
-      limit: 100,
-      allowed_updates: ["message", "callback_query"]
-    });
-    await withTelegramStateLock(async () => {
-      const nextState = readTelegramState();
-      advanceUpdateOffset(nextState, updates);
-      writeTelegramState(nextState);
-    });
-    return updates;
-  }));
-}
-
-function advanceUpdateOffset(state, updates) {
-  for (const update of Array.isArray(updates) ? updates : []) {
-    if (Number.isFinite(update.update_id)) {
-      state.updateOffset = Math.max(Number(state.updateOffset || 0), update.update_id + 1);
-    }
-  }
+async function pollSharedTelegramUpdates(telegramApiFn, timeoutSeconds) {
+  const state = readTelegramState();
+  return pollBrokerUpdates(telegramApiFn, timeoutSeconds, {
+    consumer: monitorConsumer(process.cwd()),
+    allowedChatIds: allowedChatIds(),
+    seedOffset: Number(state.updateOffset || 0)
+  });
 }
 
 async function takeMatchingInboxDecision(chatIds, code, startedAt) {
@@ -551,7 +553,8 @@ async function takeMatchingInboxDecision(chatIds, code, startedAt) {
       decision: parseApprovalDecision(message.text, code),
       chatId: String(message.chatId),
       code,
-      text: message.text
+      text: message.text,
+      updateId: message.updateId
     };
   });
 }
@@ -566,7 +569,7 @@ async function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
 
     for (const update of Array.isArray(updates) ? updates : []) {
       const callbackDecision = approvalCallbackFromUpdate(update, selected, code);
-      if (callbackDecision) {
+      if (callbackDecision && !decision) {
         decision = callbackDecision;
         continue;
       }
@@ -576,15 +579,16 @@ async function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
 
       if (selected.has(message.chatId) && isMessageAfter(message, startedAt)) {
         const parsedDecision = parseApprovalDecision(message.text, code);
-        if (parsedDecision) {
+        if (parsedDecision && !decision) {
           decision = {
             decision: parsedDecision,
             chatId: message.chatId,
             code,
-            text: message.text
+            text: message.text,
+            updateId: message.updateId
           };
-          continue;
         }
+        if (parsedDecision) continue;
       }
 
       if (!seen.has(message.id)) {
@@ -610,7 +614,8 @@ function approvalCallbackFromUpdate(update, selected, code) {
     source: "button",
     callbackQueryId: callback.id,
     messageId: callback.message && callback.message.message_id,
-    userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : ""
+    userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : "",
+    updateId: Number(update.update_id || 0)
   };
 }
 
@@ -642,59 +647,67 @@ function permissionApprovalKey(input) {
   return crypto.createHash("sha256").update(stableStringify(signature)).digest("hex");
 }
 
-function hasAlwaysApproval(key) {
+async function hasAlwaysApproval(key) {
   if (!key || process.env.CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED === "0") return false;
-  const state = readTelegramState();
-  const approvals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
-    ? state.permissionAlwaysApprovals
-    : {};
-  return Boolean(approvals[key]);
+  return withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const approvals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
+      ? state.permissionAlwaysApprovals
+      : {};
+    return Boolean(approvals[key]);
+  });
 }
 
-function rememberPendingApproval({ approvalKey, code, title, message, sentMessages, timeoutMs }) {
+async function rememberPendingApproval({ approvalKey, code, title, message, sentMessages, timeoutMs }) {
   if (!approvalKey) return;
-  const state = readTelegramState();
-  const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
-    ? state.permissionPendingApprovals
-    : {};
-  pending[approvalKey] = {
-    key: approvalKey,
-    code,
-    title,
-    message,
-    text: approvalRequestText({ title, message }),
-    sentMessages: Array.isArray(sentMessages) ? sentMessages : [],
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + Math.max(Number(timeoutMs || 0), 0) + 15 * 60 * 1000).toISOString()
-  };
-  state.permissionPendingApprovals = prunePendingApprovals(pending);
-  writeTelegramState(state);
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+      ? state.permissionPendingApprovals
+      : {};
+    pending[approvalKey] = {
+      key: approvalKey,
+      code,
+      title,
+      message,
+      text: approvalRequestText({ title, message }),
+      sentMessages: Array.isArray(sentMessages) ? sentMessages : [],
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + Math.max(Number(timeoutMs || 0), 0) + 15 * 60 * 1000).toISOString()
+    };
+    state.permissionPendingApprovals = prunePendingApprovals(pending);
+    writeTelegramState(state);
+  });
 }
 
-function takePendingApproval(approvalKey) {
+async function takePendingApproval(approvalKey) {
   if (!approvalKey) return null;
-  const state = readTelegramState();
-  const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
-    ? state.permissionPendingApprovals
-    : {};
-  const entry = pending[approvalKey] || null;
-  if (!entry) return null;
-  delete pending[approvalKey];
-  state.permissionPendingApprovals = pending;
-  writeTelegramState(state);
-  return entry;
+  return withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+      ? state.permissionPendingApprovals
+      : {};
+    const entry = pending[approvalKey] || null;
+    if (!entry) return null;
+    delete pending[approvalKey];
+    state.permissionPendingApprovals = pending;
+    writeTelegramState(state);
+    return entry;
+  });
 }
 
-function forgetPendingApproval(approvalKey) {
+async function forgetPendingApproval(approvalKey) {
   if (!approvalKey) return;
-  const state = readTelegramState();
-  const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
-    ? state.permissionPendingApprovals
-    : {};
-  if (!pending[approvalKey]) return;
-  delete pending[approvalKey];
-  state.permissionPendingApprovals = pending;
-  writeTelegramState(state);
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const pending = state.permissionPendingApprovals && typeof state.permissionPendingApprovals === "object"
+      ? state.permissionPendingApprovals
+      : {};
+    if (!pending[approvalKey]) return;
+    delete pending[approvalKey];
+    state.permissionPendingApprovals = pending;
+    writeTelegramState(state);
+  });
 }
 
 function prunePendingApprovals(pending) {
@@ -708,26 +721,28 @@ function prunePendingApprovals(pending) {
     .slice(-MAX_ALWAYS_APPROVALS));
 }
 
-function rememberAlwaysApproval(input, result) {
+async function rememberAlwaysApproval(input, result) {
   if (process.env.CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED === "0") return;
   const key = permissionApprovalKey(input);
   const toolInput = normalizedToolInput(input);
-  const state = readTelegramState();
-  const approvals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
-    ? state.permissionAlwaysApprovals
-    : {};
-  approvals[key] = {
-    key,
-    scope: "session_exact_request",
-    sessionId: extractSessionId(input),
-    cwd: extractCwd(input, toolInput),
-    toolName: normalizedToolName(input),
-    chatId: result && result.chatId ? String(result.chatId) : "",
-    userId: result && result.userId ? String(result.userId) : "",
-    approvedAt: new Date().toISOString()
-  };
-  state.permissionAlwaysApprovals = pruneAlwaysApprovals(approvals);
-  writeTelegramState(state);
+  await withTelegramStateLock(async () => {
+    const state = readTelegramState();
+    const approvals = state.permissionAlwaysApprovals && typeof state.permissionAlwaysApprovals === "object"
+      ? state.permissionAlwaysApprovals
+      : {};
+    approvals[key] = {
+      key,
+      scope: "session_exact_request",
+      sessionId: extractSessionId(input),
+      cwd: extractCwd(input, toolInput),
+      toolName: normalizedToolName(input),
+      chatId: result && result.chatId ? String(result.chatId) : "",
+      userId: result && result.userId ? String(result.userId) : "",
+      approvedAt: new Date().toISOString()
+    };
+    state.permissionAlwaysApprovals = pruneAlwaysApprovals(approvals);
+    writeTelegramState(state);
+  });
 }
 
 function pruneAlwaysApprovals(approvals) {

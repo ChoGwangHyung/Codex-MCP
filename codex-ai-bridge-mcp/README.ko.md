@@ -135,7 +135,8 @@ Provider별 추론 강도 설정:
 
 우선순위:
 
-- Claude model: task `model` > `CODEX_AI_BRIDGE_CLAUDE_MODEL` > unset.
+- Claude model: task `model` > `CODEX_AI_BRIDGE_CLAUDE_MODEL` > review preset의
+  `fable` alias(그 외에는 unset).
 - Gemini model: task `model` > `CODEX_AI_BRIDGE_GEMINI_MODEL` > Gemini CLI 기본값.
 - Antigravity model: task `model` > `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` > Antigravity CLI 기본값.
 - Claude effort: task `effort` > `CODEX_AI_BRIDGE_CLAUDE_EFFORT` > unset.
@@ -147,10 +148,10 @@ Claude는 `--max-turns`로 적용합니다. 현재 Gemini CLI와 Antigravity CLI
 의미의 flag가 없으므로 `gemini_task`와 `antigravity_task`는 cross-provider 요청
 호환성을 위해 이 필드를 받지만 provider argv에는 별도 flag를 추가하지 않습니다.
 one-shot review gate는 보통 bridge tool 호출을 1회로 제한한다는 뜻이지, 반드시
-`--max-turns 1`이라는 뜻은 아닙니다. 넓은 Fable 5/max 리뷰는 `4` 정도가
+`--max-turns 1`이라는 뜻은 아닙니다. 넓은 Fable/max 리뷰는 `4` 정도가
 실용적이고, `1`은 엄격한 단일 turn probe에만 쓰는 것을 권장합니다.
 
-Gemini와 Antigravity 작업은 `effort`를 받지 않습니다. Antigravity CLI 1.0.7은
+Gemini와 Antigravity 작업은 `effort`를 받지 않습니다. Antigravity CLI 1.1.0은
 `--model`은 제공하지만 문서화된 `--effort`나 reasoning-effort flag는 없습니다.
 Antigravity가 추론 강도를 모델 라벨 변형으로 노출하는 경우에는
 `Gemini 3.5 Flash (Medium)` 또는 `Gemini 3.1 Pro (High)`처럼 정확한 라벨을
@@ -179,7 +180,8 @@ GPT-OSS 120B (Medium)
 ## Review Preset
 
 `"preset": "review"`를 지정하면 긴 리뷰용 기본값을 사용합니다. Claude에서는 명시
-값이 없을 때 `model: "claude-fable-5"`, `effort: "max"`, `timeoutMs: 900000`,
+값이 없을 때 rolling alias인 `model: "fable"`, `effort: "max"`,
+`timeoutMs: 900000`,
 `syncBudgetMs: 120000`, `maxTurns: 4`를 적용합니다. `cross_review`에서는
 `maxTurns`가 Claude leg에 적용되고 Gemini/Antigravity leg에서도 schema 호환성을
 위해 허용됩니다.
@@ -192,7 +194,7 @@ Antigravity print mode가 bridge hard timeout과 맞춰 동작하도록 합니�
 `timeoutMs`가 양수이면 해당 값에서 print timeout을 계산하고, `timeoutMs`가 `0`이면
 `CODEX_AI_BRIDGE_ANTIGRAVITY_PRINT_TIMEOUT`이 없는 경우 기본 `15m`을 사용합니다.
 
-Windows의 Antigravity 1.0.7은 print mode가 exit code `0`으로 끝났는데 stdout은
+Windows의 Antigravity 1.0.7에서는 print mode가 exit code `0`으로 끝났는데 stdout은
 비어 있는 경우가 있습니다. MCP 결과를 사용할 수 있게 하기 위해 bridge는
 Antigravity에게 호출별 capture marker로 최종 답변을 감싸도록 요청하고, stdout이
 비어 있으면 Antigravity의 로컬 conversation store에서 해당 답변을 복구합니다.
@@ -232,7 +234,7 @@ agentic 모드에서 Antigravity 권한 요청을 자동 승인하려면
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | 기본 Claude CLI 내부 turn 한도입니다. bridge 호출 횟수가 아닙니다. 넓은 one-call 리뷰 gate는 `4`, 엄격한 단일 turn probe는 `1`을 권장합니다. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | provider hard timeout입니다. 기본값은 `900000` ms입니다. `0`이면 hard timeout을 비활성화합니다. |
 | `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `120000` ms입니다. `0`이면 provider가 종료될 때까지 기다립니다. |
-| `CODEX_AI_BRIDGE_JOB_CHECK_MS` | 실행 중인 job liveness 상태를 갱신하는 주기입니다. 기본값은 `300000` ms입니다. |
+| `CODEX_AI_BRIDGE_JOB_CHECK_MS` | in-memory job heartbeat timestamp와 MCP progress notification을 갱신하는 주기입니다. 기본값은 `300000` ms이며 provider health probe는 아닙니다. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | 완료된 in-memory job을 보관하는 시간입니다. 기본값은 1시간입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Gemini CLI command override입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_MODEL` | tool call에서 `model`을 주지 않았을 때 `--model`로 전달할 기본 Gemini 모델입니다. Gemini에는 bridge 차원의 `effort`가 없으므로 모델 성능/특성으로 조절합니다. |
@@ -252,7 +254,9 @@ agentic 모드에서 Antigravity 권한 요청을 자동 승인하려면
 Provider lock은 같은 workspace의 여러 Codex 세션이 같은 외부 provider CLI를 동시에
 실행하지 않게 합니다. 서로 다른 workspace는 기본적으로 다른 lock key를 사용하므로,
 두 프로젝트가 Claude, Gemini, Antigravity를 동시에 호출해도 한 세션이 다른 프로젝트
-작업을 기다리느라 MCP tool budget을 소모하지 않습니다. 활성 lock은 heartbeat로 갱신하고,
+작업을 기다리느라 MCP tool budget을 소모하지 않습니다. Windows에서는 경로 대소문자를
+포함해 workspace 경로를 canonicalize하므로 같은 workspace가 서로 다른 lock key를
+갖지 않습니다. 활성 lock은 heartbeat로 갱신하고,
 죽은 owner process의 lock은 정리하며, Windows에서 timeout된 provider 호출은
 process tree를 종료해 bridge lock 해제 뒤 Claude/Gemini/Antigravity 자식 process가
 남지 않게 합니다.
@@ -264,14 +268,19 @@ budget으로 제어합니다. `timeoutMs`는 일반 응답 대기 시간이 아�
 interval마다 MCP progress notification을 보냅니다. 양수 `syncBudgetMs` 안에
 작업이 끝나지 않으면 tool은 `jobId`를 반환하고 provider는 background에서 계속
 실행됩니다. 결과는 `ai_bridge_job`으로 조회합니다. 실행 중인 job은
-`lastCheckedAt`, `elapsedMs`, check interval과 hard timeout까지 남은 시간을 함께
-보여줍니다. `timeoutMs > 0`이고 `syncBudgetMs >= timeoutMs`이면 bridge가
+queue/provider 상태, `lastCheckedAt`, `elapsedMs`, heartbeat interval과 hard
+timeout까지 남은 시간을 함께 보여줍니다. hard timeout countdown은 provider lock을
+기다릴 때가 아니라 provider process가 시작된 시점부터 계산합니다. 완료된 job은
+`completed`, `failed`, `timeout` 중 하나의 machine-readable `status`와 가능한 경우
+provider PID 및 실행 시간을 반환합니다. job registry는 현재 MCP process의 memory에
+있으므로 MCP를 재시작하면 background job 조회 정보가 사라집니다.
+`timeoutMs > 0`이고 `syncBudgetMs >= timeoutMs`이면 bridge가
 `syncBudgetMs`를 자동으로 낮추고 warning을 추가해, 반환된 `jobId`를 hard timeout
 전에 조회할 시간이 남게 합니다.
 
 `timeoutMs: 240000`, `syncBudgetMs: 240000`처럼 같은 양수 값을 직접 전달하지
 마세요. foreground budget이 끝나는 순간 hard kill deadline도 같이 오기 때문입니다.
-긴 Claude Fable 5/max 리뷰는 `timeoutMs: 900000, syncBudgetMs: 120000` 또는
+긴 Claude Fable/max 리뷰는 `timeoutMs: 900000, syncBudgetMs: 120000` 또는
 `timeoutMs: 0, syncBudgetMs: 120000`을 권장합니다. `"background": true`를 주면
 즉시 `jobId`를 반환합니다.
 
