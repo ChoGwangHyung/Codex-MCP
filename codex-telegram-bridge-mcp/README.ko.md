@@ -122,6 +122,11 @@ CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
 # 선택 inbound media 용량 제한:
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
+# telegram_ask가 더 이상 기다리지 않는 button 응답을 monitor가 넘겨받기까지의
+# 대기 시간. 기본값은 5초입니다. max age를 넘긴 오래된 질문이나 대기 중인
+# callback은 확인만 하고 session에는 전달하지 않습니다.
+# CODEX_TELEGRAM_ORPHAN_CALLBACK_GRACE_MS=5000
+# CODEX_TELEGRAM_ORPHAN_CALLBACK_MAX_AGE_MS=600000
 # Telegram에서 들어온 요청의 결과 회신은 bundled Stop hook이 처리합니다.
 # 선택 native Codex permission approval:
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
@@ -333,6 +338,21 @@ Timeout 결과:
 }
 ```
 
+timeout이 되면 질문 메시지를 다시 쓰고 button을 제거합니다. 눌러도 아무 반응이
+없는 죽은 keyboard가 채팅에 남지 않습니다.
+
+`telegram_ask`가 이미 끝난 뒤에 누른 button도 사라지지 않습니다. 수신 monitor가
+그 응답을 받아 Telegram에 확인 응답을 보내고 keyboard를 지운 뒤, button label을
+사용자가 직접 입력한 것처럼 질문을 만든 session으로 relay합니다. 다른 project가
+활성 chat route가 되더라도 max-age 시간 동안 원래 질문의 소유권을 shared broker에
+보존합니다. 같은 질문을 여러 번 눌러도 확인만 하고 두 번 전달하지 않습니다.
+늦은 button label이 같다는 이유만으로 더 새로운 `telegram_ask`나
+`telegram_wait_reply`의 응답이 되지도 않습니다. 원래 session이 종료되면 다른
+monitor는 keyboard만 제거하고 선택을 다른 session으로 보내지 않습니다. 대기열에서 max age를 넘긴 callback이나 max age보다
+오래된 질문을 새로 누른 응답은 확인만 하고 전달하지 않아 이미 다른 작업으로
+넘어간 session을 방해하지 않습니다. orphan handler 중단이나 일시적인 message edit
+실패가 발생하면 claim을 회수해 다음 monitor pass에서 다시 처리합니다.
+
 ## Telegram-To-Codex Relay
 
 bridge 설정이 완료되면 allowlist Telegram 메시지는 기본적으로 활성 Codex
@@ -523,9 +543,10 @@ runtime state 파일을 손상시키는 문제를 피합니다.
 있습니다. 선택한 target이 사라지면 다음 eligible monitor가 활성화됩니다.
 `/sessions`와 `/use`는 broker control command라 Codex 세션에는 주입되지 않습니다.
 `telegram_ask`나 permission approval이 text fallback을 기다리는 동안에는 해당 chat을
-요청 프로젝트로 임시 route하고, 완료되면 기존 활성 route를 다시 사용합니다.
-chat 간 routing state까지 완전히 분리해야 하면 별도 bot token을 쓰는 것이 가장
-강한 격리 방식입니다.
+가장 최근에 시작한 요청 프로젝트로 임시 route합니다. 요청별 subscriber는 다른
+프로젝트로 route된 update를 무시하며, 완료되면 기존 활성 route를 다시 사용합니다.
+chat 간 routing state까지 완전히 분리해야 하면 별도 bot token을 쓰는 것이 가장 강한
+격리 방식입니다.
 
 ## 보안 메모
 

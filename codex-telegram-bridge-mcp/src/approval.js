@@ -64,6 +64,10 @@ function parseApprovalCallbackData(data, code) {
   };
 }
 
+function approvalSubscriberId(code) {
+  return `permission:${String(code || "")}`;
+}
+
 function approvalRequestText({ title, message }) {
   const body = [
     "Approval request / 승인 요청",
@@ -87,5 +91,6 @@ module.exports = {
   parseApprovalDecision,
   approvalReplyMarkup,
   approvalRequestText,
+  approvalSubscriberId,
   truncateTelegramText
 };

@@ -190,7 +190,8 @@ accepted by Gemini and Antigravity legs for schema compatibility.
 
 ## Antigravity CLI
 
-`antigravity_task` uses `agy -p -` and writes the full provider prompt to stdin.
+`antigravity_task` writes the full provider prompt to stdin. Current Antigravity
+CLI releases detect piped stdin and enter print mode without a `-p` argument.
 It also passes an isolated temporary `--log-file` and `--print-timeout` so
 Antigravity print mode has a timeout aligned with the bridge hard timeout. If
 `timeoutMs` is positive, the print timeout is derived from that value. If

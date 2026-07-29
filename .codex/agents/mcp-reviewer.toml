@@ -9,7 +9,9 @@ Include file references and practical reproduction or test guidance. Do not edit
 """
 
 [mcp_servers.codex-ai-bridge]
+command = "codex-ai-bridge-mcp"
 enabled = false
 
 [mcp_servers.codex-telegram-bridge]
+command = "codex-telegram-bridge-mcp"
 enabled = false

@@ -10,6 +10,8 @@ const {
   DEFAULT_MONITOR_BACKOFF_MS,
   DEFAULT_INBOX_MAX_MESSAGES,
   DEFAULT_DOWNLOAD_MAX_BYTES,
+  DEFAULT_ORPHAN_CALLBACK_GRACE_MS,
+  DEFAULT_ORPHAN_CALLBACK_MAX_AGE_MS,
   DEFAULT_RELAY_PENDING_REPLY_TTL_MS
 } = require("./constants.js");
 const { normalizeInteger, normalizePath } = require("./util.js");
@@ -28,6 +30,24 @@ function inboxMaxMessages() {
 
 function downloadMaxBytes() {
   return normalizeInteger(process.env.CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES, DEFAULT_DOWNLOAD_MAX_BYTES, 1, 2 * 1024 * 1024 * 1024);
+}
+
+function orphanCallbackGraceMs() {
+  return normalizeInteger(
+    process.env.CODEX_TELEGRAM_ORPHAN_CALLBACK_GRACE_MS,
+    DEFAULT_ORPHAN_CALLBACK_GRACE_MS,
+    0,
+    120000
+  );
+}
+
+function orphanCallbackMaxAgeMs() {
+  return normalizeInteger(
+    process.env.CODEX_TELEGRAM_ORPHAN_CALLBACK_MAX_AGE_MS,
+    DEFAULT_ORPHAN_CALLBACK_MAX_AGE_MS,
+    60000,
+    24 * 60 * 60 * 1000
+  );
 }
 
 function relayEnabled() {
@@ -238,6 +258,8 @@ module.exports = {
   monitorBackoffMs,
   inboxMaxMessages,
   downloadMaxBytes,
+  orphanCallbackGraceMs,
+  orphanCallbackMaxAgeMs,
   relayEnabled,
   relayMode,
   relayIgnoreExisting,

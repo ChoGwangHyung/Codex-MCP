@@ -84,7 +84,7 @@ function providerCommand(provider, args) {
     const model = validateModel(args.model || process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL);
     const logFile = antigravityLogFile();
     const capture = antigravityCapture();
-    const commandArgs = ["--log-file", logFile, "-p", "-", "--print-timeout", antigravityPrintTimeout(args)];
+    const commandArgs = ["--log-file", logFile, "--print-timeout", antigravityPrintTimeout(args)];
     if (antigravitySandboxEnabled(args)) {
       commandArgs.push("--sandbox");
     }

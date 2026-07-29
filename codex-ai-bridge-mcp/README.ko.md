@@ -188,8 +188,9 @@ GPT-OSS 120B (Medium)
 
 ## Antigravity CLI
 
-`antigravity_task`는 `agy -p -`를 사용하고 전체 provider prompt를 stdin으로
-전달합니다. 또한 독립적인 임시 `--log-file`과 `--print-timeout`을 전달해
+`antigravity_task`는 전체 provider prompt를 stdin으로 전달합니다. 현재
+Antigravity CLI는 `-p` 인자 없이 piped stdin을 감지해 print mode로
+진입합니다. 또한 독립적인 임시 `--log-file`과 `--print-timeout`을 전달해
 Antigravity print mode가 bridge hard timeout과 맞춰 동작하도록 합니다.
 `timeoutMs`가 양수이면 해당 값에서 print timeout을 계산하고, `timeoutMs`가 `0`이면
 `CODEX_AI_BRIDGE_ANTIGRAVITY_PRINT_TIMEOUT`이 없는 경우 기본 `15m`을 사용합니다.

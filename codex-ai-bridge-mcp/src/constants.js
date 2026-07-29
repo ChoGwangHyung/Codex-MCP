@@ -1,7 +1,7 @@
 "use strict";
 
 const SERVER_NAME = "codex-ai-bridge-mcp";
-const SERVER_VERSION = "1.1.1";
+const SERVER_VERSION = "1.1.2";
 const MIN_TASK_TIMEOUT_MS = 0;
 const MIN_HEALTH_TIMEOUT_MS = 1000;
 const MAX_HEALTH_TIMEOUT_MS = 60000;

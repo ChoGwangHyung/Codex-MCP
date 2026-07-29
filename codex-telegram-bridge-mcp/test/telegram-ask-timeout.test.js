@@ -14,9 +14,11 @@ process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-stat
 process.env.CODEX_TELEGRAM_BROKER_STATE_FILE = path.join(tempDir, "broker-state.json");
 
 const originalFetch = global.fetch;
+const apiCalls = [];
 
 global.fetch = async (url, options) => {
   const method = String(url).split("/").pop();
+  apiCalls.push({ method, payload: JSON.parse(options.body || "{}") });
   if (method === "sendMessage") {
     return telegramResponse({ message_id: 60 });
   }
@@ -42,6 +44,13 @@ function telegramResponse(result) {
   assert.equal(result.timeout, true);
   assert.equal(result.chatId, "12345");
   assert.equal(result.messageId, 60);
+
+  // A timed out prompt must not leave live buttons behind in the chat.
+  const expired = apiCalls.filter((call) => call.method === "editMessageText");
+  assert.equal(expired.length, 1);
+  assert.equal(expired[0].payload.message_id, 60);
+  assert.match(expired[0].payload.text, /만료됨/);
+  assert.deepEqual(expired[0].payload.reply_markup, { inline_keyboard: [] });
 })().finally(() => {
   global.fetch = originalFetch;
 }).catch((error) => {

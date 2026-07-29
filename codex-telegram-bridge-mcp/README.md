@@ -123,6 +123,11 @@ CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
 # Optional inbound media limit:
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
+# Optional delay before the monitor takes over a button press that no
+# telegram_ask is waiting on any more; default is 5 seconds. Old prompts and
+# callbacks queued past the max age are acknowledged but never relayed.
+# CODEX_TELEGRAM_ORPHAN_CALLBACK_GRACE_MS=5000
+# CODEX_TELEGRAM_ORPHAN_CALLBACK_MAX_AGE_MS=600000
 # Telegram-origin requests are replied to by the bundled Stop hook.
 # Optional native Codex permission approval:
 # CODEX_TELEGRAM_PERMISSION_TIMEOUT_MS=300000
@@ -336,6 +341,22 @@ Timeout result:
 }
 ```
 
+On timeout the prompt is rewritten and its buttons are removed, so the chat
+never keeps a dead keyboard that silently swallows taps.
+
+A button pressed after `telegram_ask` already returned is not lost. The receive
+monitor picks the press up, acknowledges it in Telegram, clears the keyboard,
+and relays the button label into the session that created the prompt as if it
+had been typed. Prompt ownership remains in the shared broker for the max-age
+window even if another project becomes the active chat route. Repeated taps on
+the same prompt are acknowledged once and never relayed twice. A late button
+message cannot satisfy a newer `telegram_ask` or `telegram_wait_reply` just
+because its label matches. If the originating session has exited, another live
+monitor only clears the keyboard and does not route the choice elsewhere. A callback that
+sat queued past the max age, or a new press on a prompt older than that window,
+is only acknowledged so a session that has moved on is not disturbed. Orphan
+claims are recoverable after an interrupted handler or transient edit failure.
+
 ## Telegram-To-Codex Relay
 
 When the bridge is configured, allowlisted Telegram messages are relayed into
@@ -530,8 +551,10 @@ route stays active while that target remains live; if it disappears, the next
 eligible monitor becomes active. `/sessions` and `/use` are broker control
 commands and are not injected into Codex. While `telegram_ask` or a permission
 approval is waiting for text fallback, that chat is temporarily routed to the
-requesting project and returns to its prior active route afterward. Separate bot tokens are still the
-strongest isolation when chats must never share routing state.
+most recently started requesting project, and request-specific subscribers
+ignore updates routed to another project. The chat returns to its prior active
+route afterward. Separate bot tokens are still the strongest isolation when
+chats must never share routing state.
 
 ## Security Notes
 

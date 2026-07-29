@@ -9,7 +9,9 @@ Do not edit files, commit, push, publish, or invoke AI/Telegram bridge MCP tools
 """
 
 [mcp_servers.codex-ai-bridge]
+command = "codex-ai-bridge-mcp"
 enabled = false
 
 [mcp_servers.codex-telegram-bridge]
+command = "codex-telegram-bridge-mcp"
 enabled = false

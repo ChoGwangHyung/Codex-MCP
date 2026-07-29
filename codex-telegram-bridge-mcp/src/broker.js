@@ -12,11 +12,20 @@ const {
   withFileLock,
   withTelegramUpdateLock
 } = require("./state.js");
+const {
+  choiceSubscriberId,
+  parseChoiceCallbackData
+} = require("./choices.js");
+const {
+  approvalSubscriberId,
+  parseApprovalCallbackData
+} = require("./approval.js");
 
 const BROKER_VERSION = 1;
 const CONSUMER_STALE_MS = 2 * 60 * 1000;
 const RECORD_TTL_MS = 24 * 60 * 60 * 1000;
 const SUBSCRIBER_STALE_MS = 60 * 60 * 1000;
+const ORPHAN_CLAIM_STALE_MS = 2 * 60 * 1000;
 const MAX_RECORDS = 2000;
 
 function monitorConsumer(cwd = process.cwd()) {
@@ -100,8 +109,85 @@ async function consumeBrokerUpdates(subscriberId, options = {}) {
         .filter((record) => !record.claimedBy && record.routeConsumerId === consumerId && record.update && record.update.message)
         .map((record) => record.update);
     }
-    return available.map((record) => record.update);
+    const routeConsumerId = String(subscriber.routeConsumerId || "");
+    return available
+      .filter((record) => !routeConsumerId || record.routeConsumerId === routeConsumerId)
+      .map((record) => record.update);
   });
+}
+
+async function claimOrphanCallbacks(consumerId, options = {}) {
+  const owner = String(consumerId || "");
+  const claimPrefix = String(options.claimId || `orphan:${owner}`);
+  const graceMs = Number(options.graceMs) > 0 ? Number(options.graceMs) : 0;
+  const limit = Math.max(1, Number(options.limit) || MAX_RECORDS);
+  const now = Date.now();
+
+  return updateBrokerState((state) => {
+    const consumer = state.consumers[owner];
+    const allowedChatIds = consumer ? consumer.allowedChatIds : [];
+    const claimed = [];
+
+    for (const record of state.records) {
+      if (claimed.length >= limit) break;
+      if (record.claimedBy && !orphanClaimIsStale(record, now)) continue;
+      const callback = record.update && record.update.callback_query;
+      if (!callback) continue;
+      if (!callbackSubscriberId(callback.data)) continue;
+      const ownership = callbackClaimOwnership(state, record, owner, allowedChatIds, now);
+      if (!ownership) continue;
+      const receivedAt = Date.parse(record.receivedAt || "");
+      if (Number.isFinite(receivedAt) && now - receivedAt < graceMs) continue;
+      if (hasActiveCallbackOwner(state, callback.data, now)) continue;
+      const claimId = `${claimPrefix}:${Number(record.updateId)}`;
+      record.claimedBy = claimId;
+      record.claimedAt = new Date().toISOString();
+      claimed.push({
+        update: record.update,
+        receivedAt: record.receivedAt,
+        claimId,
+        deliverToSession: ownership.deliverToSession
+      });
+    }
+    return claimed;
+  });
+}
+
+function callbackClaimOwnership(state, record, consumerId, allowedChatIds, now) {
+  if (record.routeConsumerId) {
+    if (record.routeConsumerId === consumerId) return { deliverToSession: true };
+    if (consumerIsLiveAt(state.consumers[record.routeConsumerId], now)) return null;
+    const chatId = updateChatId(record.update);
+    return Boolean(chatId) && allowedChatIds.includes(chatId)
+      ? { deliverToSession: false }
+      : null;
+  }
+  const chatId = updateChatId(record.update);
+  return Boolean(chatId) && allowedChatIds.includes(chatId)
+    ? { deliverToSession: true }
+    : null;
+}
+
+function orphanClaimIsStale(record, now) {
+  if (!String(record.claimedBy || "").startsWith("orphan:")) return false;
+  const claimedAt = Date.parse(record.claimedAt || "");
+  return !Number.isFinite(claimedAt) || now - claimedAt > ORPHAN_CLAIM_STALE_MS;
+}
+
+function hasActiveCallbackOwner(state, data, now) {
+  const subscriberId = callbackSubscriberId(data);
+  if (!subscriberId) return false;
+  const subscriber = state.subscribers[subscriberId];
+  if (!subscriber) return false;
+  const expiresAt = Date.parse(subscriber.expiresAt || "");
+  return Number.isFinite(expiresAt) && expiresAt > now;
+}
+
+function callbackSubscriberId(data) {
+  const choice = parseChoiceCallbackData(data);
+  if (choice) return choiceSubscriberId(choice.requestId);
+  const approval = parseApprovalCallbackData(data);
+  return approval ? approvalSubscriberId(approval.code) : "";
 }
 
 async function claimBrokerUpdate(updateId, claimId) {
@@ -117,11 +203,53 @@ async function claimBrokerUpdate(updateId, claimId) {
   });
 }
 
+async function releaseBrokerUpdate(updateId, claimId) {
+  const id = Number(updateId);
+  const owner = String(claimId || "");
+  if (!Number.isFinite(id) || !owner) return false;
+  return updateBrokerState((state) => {
+    const record = state.records.find((item) => Number(item.updateId) === id);
+    if (!record || record.claimedBy !== owner) return false;
+    delete record.claimedBy;
+    delete record.claimedAt;
+    return true;
+  });
+}
+
+async function completeBrokerUpdate(updateId, claimId) {
+  const id = Number(updateId);
+  const owner = String(claimId || "");
+  if (!Number.isFinite(id) || !owner) return false;
+  return updateBrokerState((state) => {
+    const record = state.records.find((item) => Number(item.updateId) === id);
+    if (!record || record.claimedBy !== owner) return false;
+    record.claimedBy = `handled:${owner}`;
+    record.claimedAt = new Date().toISOString();
+    return true;
+  });
+}
+
 async function removeBrokerSubscription(subscriberId) {
   const id = String(subscriberId || "").trim();
   if (!id) return;
   await updateBrokerState((state) => {
     delete state.subscribers[id];
+  });
+}
+
+async function retireBrokerSubscription(subscriberId, options = {}) {
+  const id = String(subscriberId || "").trim();
+  if (!id) return;
+  const retainForMs = Math.max(0, Number(options.retainForMs) || 0);
+  await updateBrokerState((state) => {
+    const subscriber = state.subscribers[id];
+    if (!subscriber) return;
+    const now = new Date();
+    subscriber.expiresAt = now.toISOString();
+    subscriber.interceptMessages = false;
+    subscriber.retiredAt = now.toISOString();
+    subscriber.retainUntil = new Date(now.getTime() + retainForMs).toISOString();
+    subscriber.lastSeenAt = now.toISOString();
   });
 }
 
@@ -151,15 +279,16 @@ function ingestUpdates(state, updates, pollingConsumerId) {
     seen.add(updateId);
 
     const message = update.message;
-    const chatId = message && message.chat && String(message.chat.id);
-    const command = chatId && liveConsumersForChat(state, chatId).length > 0
+    const chatId = updateChatId(update);
+    const command = message && chatId && liveConsumersForChat(state, chatId).length > 0
       ? parseRoutingCommand(message.text)
       : null;
     let routeConsumerId = "";
     if (command) {
       controlActions.push(handleRoutingCommand(state, chatId, command));
     } else if (chatId) {
-      routeConsumerId = routeConsumer(state, chatId, pollingConsumerId);
+      routeConsumerId = callbackRouteConsumer(state, update, chatId) ||
+        routeConsumer(state, chatId, pollingConsumerId);
     }
     state.records.push({
       sequence: Number(state.nextSequence || 1),
@@ -238,12 +367,23 @@ function routeUnassignedRecords(state, consumerId) {
   const consumer = state.consumers[consumerId];
   if (!consumer) return;
   for (const record of state.records) {
-    const message = record.update && record.update.message;
-    const chatId = message && message.chat && String(message.chat.id);
+    const chatId = updateChatId(record.update);
     if (record.control || record.routeConsumerId || !chatId) continue;
     if (!consumer.allowedChatIds.includes(chatId)) continue;
-    record.routeConsumerId = routeConsumer(state, chatId, consumerId);
+    record.routeConsumerId = callbackRouteConsumer(state, record.update, chatId) ||
+      routeConsumer(state, chatId, consumerId);
   }
+}
+
+function callbackRouteConsumer(state, update, chatId) {
+  const callback = update && update.callback_query;
+  const subscriberId = callbackSubscriberId(callback && callback.data);
+  if (!subscriberId) return "";
+  const subscriber = state.subscribers[subscriberId];
+  if (!subscriber || !subscriber.routeConsumerId) return "";
+  const chatIds = normalizeStringList(subscriber.chatIds);
+  if (chatIds.length > 0 && !chatIds.includes(String(chatId))) return "";
+  return String(subscriber.routeConsumerId);
 }
 
 function registerConsumer(state, consumer, allowedChatIds) {
@@ -263,8 +403,20 @@ function liveConsumersForChat(state, chatId) {
 }
 
 function consumerIsLive(consumer) {
+  return consumerIsLiveAt(consumer, Date.now());
+}
+
+function consumerIsLiveAt(consumer, now) {
   const seenAt = Date.parse(consumer && consumer.lastSeenAt || "");
-  return Number.isFinite(seenAt) && Date.now() - seenAt <= CONSUMER_STALE_MS;
+  return Number.isFinite(seenAt) && now - seenAt <= CONSUMER_STALE_MS;
+}
+
+function updateChatId(update) {
+  const message = update && update.message;
+  if (message && message.chat) return String(message.chat.id);
+  const callback = update && update.callback_query;
+  const callbackMessage = callback && callback.message;
+  return callbackMessage && callbackMessage.chat ? String(callbackMessage.chat.id) : "";
 }
 
 function parseRoutingCommand(text) {
@@ -312,6 +464,12 @@ function normalizeConsumers(value) {
 function pruneBrokerState(state) {
   const now = Date.now();
   for (const [id, subscriber] of Object.entries(state.subscribers)) {
+    const retainUntil = Date.parse(subscriber && subscriber.retainUntil || "");
+    if (Number.isFinite(retainUntil)) {
+      if (retainUntil > now) continue;
+      delete state.subscribers[id];
+      continue;
+    }
     const seen = Date.parse(subscriber && subscriber.lastSeenAt || "");
     if (Number.isFinite(seen) && now - seen > SUBSCRIBER_STALE_MS) delete state.subscribers[id];
   }
@@ -388,12 +546,18 @@ module.exports = {
   createBrokerSubscription,
   consumeBrokerUpdates,
   removeBrokerSubscription,
+  retireBrokerSubscription,
   claimBrokerUpdate,
+  releaseBrokerUpdate,
+  completeBrokerUpdate,
+  claimOrphanCallbacks,
   brokerStatus,
   _test: {
     brokerStatePath,
+    callbackSubscriberId,
     canonicalPath,
     normalizeBrokerState,
-    parseRoutingCommand
+    parseRoutingCommand,
+    updateChatId
   }
 };

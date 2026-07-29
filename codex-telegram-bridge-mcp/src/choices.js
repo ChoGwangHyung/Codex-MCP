@@ -83,6 +83,10 @@ function parseChoiceCallbackData(data) {
   };
 }
 
+function choiceSubscriberId(requestId) {
+  return `choice:${String(requestId || "")}`;
+}
+
 function findChoiceByText(choices, text) {
   const normalized = normalizeChoiceText(text);
   return choices.find((choice) => {
@@ -122,13 +126,19 @@ function choiceSelectionText(question, label) {
   return [sanitize(question), "", `선택됨: ${sanitize(label)}`].filter(Boolean).join("\n");
 }
 
+function choiceExpiredText(question) {
+  return [sanitize(question), "", "만료됨: 이 요청의 대기 시간이 끝났습니다."].filter(Boolean).join("\n");
+}
+
 module.exports = {
   createChoiceRequestId,
   normalizeChoices,
   choiceReplyMarkup,
   parseChoiceCallbackData,
+  choiceSubscriberId,
   findChoiceByText,
   selectedChoiceResult,
   timeoutChoiceResult,
-  choiceSelectionText
+  choiceSelectionText,
+  choiceExpiredText
 };

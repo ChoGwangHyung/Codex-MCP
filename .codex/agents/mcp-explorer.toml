@@ -9,7 +9,9 @@ Prefer targeted searches and reads. Do not edit files, run publishing commands, 
 """
 
 [mcp_servers.codex-ai-bridge]
+command = "codex-ai-bridge-mcp"
 enabled = false
 
 [mcp_servers.codex-telegram-bridge]
+command = "codex-telegram-bridge-mcp"
 enabled = false

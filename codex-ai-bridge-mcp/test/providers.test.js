@@ -44,7 +44,7 @@ const { askProvider } = require("../src/providers.js");
   });
   assert.match(antigravityResult, /antigravity failed:/);
   assert.match(antigravityResult, /argv:/);
-  assert.match(antigravityResult, /-p -/);
+  assert.doesNotMatch(antigravityResult, /-p -/);
   assert.match(antigravityResult, /--print-timeout 5s/);
   assert.match(antigravityResult, /--sandbox/);
   assert.match(antigravityResult, /--model "Gemini 3\.5 Flash \(Medium\)"/);

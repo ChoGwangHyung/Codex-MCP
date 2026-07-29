@@ -11,6 +11,8 @@ const {
   monitorBackoffMs,
   inboxMaxMessages,
   downloadMaxBytes,
+  orphanCallbackGraceMs,
+  orphanCallbackMaxAgeMs,
   telegramEnabled,
   allowedChatIds,
   assertTelegram,
@@ -26,11 +28,15 @@ const {
 const {
   brokerStatus,
   claimBrokerUpdate,
+  claimOrphanCallbacks,
+  completeBrokerUpdate,
   consumeBrokerUpdates,
   createBrokerSubscription,
   monitorConsumer,
   pollBrokerUpdates,
-  removeBrokerSubscription
+  releaseBrokerUpdate,
+  removeBrokerSubscription,
+  retireBrokerSubscription
 } = require("./broker.js");
 const { normalizeTimeout, normalizeInteger, delay, sanitize } = require("./util.js");
 const {
@@ -38,8 +44,10 @@ const {
   parseApprovalDecision
 } = require("./approval.js");
 const {
+  choiceExpiredText,
   choiceReplyMarkup,
   choiceSelectionText,
+  choiceSubscriberId,
   createChoiceRequestId,
   findChoiceByText,
   normalizeChoices,
@@ -47,6 +55,11 @@ const {
   selectedChoiceResult,
   timeoutChoiceResult
 } = require("./choices.js");
+const {
+  claimChoicePrompt,
+  markChoicePrompt,
+  releaseChoicePrompt
+} = require("./choice-state.js");
 
 let monitorStarted = false;
 let monitorRunning = false;
@@ -315,7 +328,7 @@ async function telegramAsk(args) {
   }
 
   const requestId = createChoiceRequestId();
-  const subscriberId = `choice:${requestId}`;
+  const subscriberId = choiceSubscriberId(requestId);
   await createBrokerSubscription(subscriberId, {
     startAtEnd: true,
     reset: true,
@@ -331,15 +344,27 @@ async function telegramAsk(args) {
       disable_web_page_preview: Boolean(args.disableWebPagePreview),
       reply_markup: choiceReplyMarkup(requestId, choices)
     });
+    const messageId = sent && sent.message_id;
     const result = await waitForChoiceResponse({
       chatId,
-      messageId: sent && sent.message_id,
+      messageId,
       question: text,
       choices,
       requestId,
       subscriberId,
       timeoutMs
     });
+    if (result.timeout) {
+      await markChoicePrompt(chatId, messageId, "expired");
+    } else {
+      await markChoicePrompt(chatId, messageId, "settled");
+    }
+    await retireBrokerSubscription(subscriberId, {
+      retainForMs: orphanCallbackMaxAgeMs()
+    });
+    if (result.timeout) {
+      await expireChoiceMessage(chatId, messageId, text);
+    }
     return JSON.stringify(result, null, 2);
   } catch (error) {
     await removeBrokerSubscription(subscriberId);
@@ -493,8 +518,146 @@ async function pollAndProcessTelegramUpdates(timeoutSeconds) {
     if (monitorLastErrorAt) state.lastErrorAt = monitorLastErrorAt;
     writeTelegramState(state);
   });
+  await handleOrphanCallbacks();
   await notifyChoiceWaiters();
   await notifyInboxWaiters();
+}
+
+async function handleOrphanCallbacks() {
+  const consumer = currentMonitorConsumer();
+  while (true) {
+    const records = await claimOrphanCallbacks(consumer.id, {
+      claimId: `orphan:${consumer.id}`,
+      graceMs: orphanCallbackGraceMs(),
+      limit: 1
+    });
+    if (records.length === 0) return;
+
+    const record = records[0];
+    try {
+      const message = await settleOrphanCallback(record);
+      if (message) {
+        await withTelegramStateLock(async () => {
+          const state = readTelegramState();
+          appendAllowedMessages(state, [message]);
+          writeTelegramState(state);
+        });
+        await markChoicePrompt(message.chatId, message.messageId, "settled");
+      }
+      const completed = await completeBrokerUpdate(
+        record.update && record.update.update_id,
+        record.claimId
+      );
+      if (!completed) throw new Error("Failed to complete an orphan Telegram callback claim.");
+    } catch (error) {
+      const callbackMessage = record.update && record.update.callback_query &&
+        record.update.callback_query.message;
+      await Promise.allSettled([
+        releaseChoicePrompt(
+          callbackMessage && callbackMessage.chat && callbackMessage.chat.id,
+          callbackMessage && callbackMessage.message_id,
+          record.claimId
+        ),
+        releaseBrokerUpdate(
+          record.update && record.update.update_id,
+          record.claimId
+        )
+      ]);
+      throw error;
+    }
+  }
+}
+
+async function settleOrphanCallback(record) {
+  const update = record && record.update;
+  const callback = update && update.callback_query;
+  const message = callback && callback.message;
+  const chatId = message && message.chat && String(message.chat.id);
+  if (!chatId || !allowedChatIds().has(chatId)) return null;
+
+  const messageId = Number(message.message_id || 0);
+  const label = callbackButtonLabel(callback);
+  if (record.deliverToSession === false) {
+    await answerChoiceCallback(callback.id, "원래 세션이 종료되어 이 요청을 만료 처리했습니다.");
+    if (!(await clearChoiceKeyboard(chatId, messageId))) {
+      throw new Error("Failed to clear an orphan Telegram callback keyboard.");
+    }
+    return null;
+  }
+  // Old prompts and long-queued presses are closed out without replaying them
+  // into a session that may already have moved on.
+  const choice = parseChoiceCallbackData(callback.data);
+  if (!choice) {
+    await answerChoiceCallback(callback.id, "이 요청은 이미 만료되었습니다.");
+    if (!(await clearChoiceKeyboard(chatId, messageId))) {
+      throw new Error("Failed to clear an expired Telegram approval keyboard.");
+    }
+    return null;
+  }
+  const stale = isStaleOrphanCallback(callback, record.receivedAt);
+  if (stale || !label) {
+    await answerChoiceCallback(callback.id, "이 요청은 이미 만료되었습니다.");
+    if (!(await expireChoiceMessage(chatId, messageId, message.text))) {
+      throw new Error("Failed to expire an orphan Telegram choice message.");
+    }
+    return null;
+  }
+
+  if (!(await claimChoicePrompt(chatId, messageId, record.claimId))) {
+    await answerChoiceCallback(callback.id, "이 선택은 이미 처리되었습니다.");
+    if (!(await clearChoiceKeyboard(chatId, messageId))) {
+      throw new Error("Failed to clear a duplicate Telegram choice keyboard.");
+    }
+    return null;
+  }
+
+  await answerChoiceCallback(callback.id, `선택 전달됨: ${label}`);
+  if (!(await updateChoiceMessage(callback, message.text, label))) {
+    throw new Error("Failed to settle an orphan Telegram choice message.");
+  }
+  return orphanCallbackInboxMessage(update, callback, label, choice.requestId);
+}
+
+function isStaleOrphanCallback(callback, receivedAt) {
+  const receivedTimestamp = Date.parse(receivedAt || "");
+  const messageDate = Number(callback && callback.message && callback.message.date);
+  const promptTimestamp = Number.isFinite(messageDate) && messageDate > 0
+    ? messageDate * 1000
+    : NaN;
+  const maxAgeMs = orphanCallbackMaxAgeMs();
+  return [receivedTimestamp, promptTimestamp].some((timestamp) => {
+    return Number.isFinite(timestamp) && Date.now() - timestamp > maxAgeMs;
+  });
+}
+
+function callbackButtonLabel(callback) {
+  const message = callback && callback.message;
+  const rows = message && message.reply_markup && message.reply_markup.inline_keyboard;
+  for (const row of Array.isArray(rows) ? rows : []) {
+    for (const button of Array.isArray(row) ? row : []) {
+      if (button && button.callback_data === callback.data) return sanitize(button.text);
+    }
+  }
+  return "";
+}
+
+function orphanCallbackInboxMessage(update, callback, label, requestId) {
+  const message = callback.message || {};
+  const now = new Date().toISOString();
+  return {
+    id: `${Number(update.update_id || 0)}:${Number(message.message_id || 0)}`,
+    updateId: Number(update.update_id || 0),
+    messageId: Number(message.message_id || 0),
+    chatId: String(message.chat.id),
+    text: label,
+    date: now,
+    receivedAt: now,
+    userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : "",
+    from: displayName(callback),
+    attachments: [],
+    source: "button",
+    choiceRequestId: requestId
+  };
 }
 
 async function withPollLock(work) {
@@ -736,7 +899,7 @@ function appendAllowedMessages(state, messages) {
 async function takeFirstInboxMessage(chatId, consume) {
   return withTelegramStateLock(async () => {
     const state = readTelegramState();
-    const index = state.inbox.findIndex((message) => message.chatId === String(chatId));
+    const index = state.inbox.findIndex((message) => isInboxReplyMessage(message, chatId));
     if (index < 0) return null;
     const [message] = consume ? state.inbox.splice(index, 1) : [state.inbox[index]];
     if (consume) writeTelegramState(state);
@@ -744,11 +907,19 @@ async function takeFirstInboxMessage(chatId, consume) {
   });
 }
 
+function isInboxReplyMessage(message, chatId) {
+  return Boolean(message) &&
+    message.chatId === String(chatId) &&
+    message.source !== "button";
+}
+
 async function clearInboxForChat(chatId) {
   await withTelegramStateLock(async () => {
     const state = readTelegramState();
     const before = state.inbox.length;
-    state.inbox = state.inbox.filter((message) => message.chatId !== String(chatId));
+    state.inbox = state.inbox.filter((message) => {
+      return message.chatId !== String(chatId) || message.source === "button";
+    });
     if (state.inbox.length !== before) writeTelegramState(state);
   });
 }
@@ -786,12 +957,12 @@ function waitForChoiceResponse({ chatId, messageId, question, choices, requestId
       subscriberId,
       resolve,
       done: false,
-      timer: null
+      settling: false,
+      timer: null,
+      deadlineAt: Date.now() + timeoutMs
     };
-    waiter.timer = setTimeout(() => {
-      settleChoiceWaiter(waiter, timeoutChoiceResult({ chatId, messageId, requestId }));
-    }, timeoutMs);
     choiceWaiters.add(waiter);
+    armChoiceTimeout(waiter);
     void notifyChoiceWaiters();
     void pollChoiceUntilSettled(waiter);
   });
@@ -806,6 +977,7 @@ async function pollChoiceUntilSettled(waiter) {
       if (waiter.done) continue;
       const polled = await withPollLock(() => pollSharedTelegramUpdates(2));
       await sendBrokerControlActions(polled.controlActions);
+      if (waiter.done) continue;
       const updates = await consumeBrokerUpdates(waiter.subscriberId, { startAtEnd: true });
       await processChoiceCallbacks(updates, waiter);
       await processChoiceTextUpdates(updates, waiter);
@@ -848,20 +1020,35 @@ async function notifyInboxWaiters() {
 
 async function notifyChoiceWaiters() {
   for (const waiter of Array.from(choiceWaiters)) {
-    if (waiter.done) continue;
-    const message = await takeMatchingChoiceMessage(waiter);
-    if (!message) continue;
-    const choice = findChoiceByText(waiter.choices, message.text);
-    await claimBrokerUpdate(message.updateId, waiter.subscriberId || `choice:${waiter.requestId}`);
-    settleChoiceWaiter(waiter, selectedChoiceResult({
-      choice,
-      chatId: message.chatId,
-      messageId: waiter.messageId || message.messageId,
-      userId: message.userId,
-      timestamp: message.receivedAt || message.date,
-      source: "text",
-      requestId: waiter.requestId
-    }));
+    if (!reserveChoiceWaiter(waiter)) continue;
+    try {
+      const message = await takeMatchingChoiceMessage(waiter);
+      if (!message) {
+        releaseChoiceWaiter(waiter);
+        continue;
+      }
+      const choice = findChoiceByText(waiter.choices, message.text);
+      const claimed = await claimBrokerUpdate(
+        message.updateId,
+        waiter.subscriberId || `choice:${waiter.requestId}`
+      );
+      if (!claimed) {
+        releaseChoiceWaiter(waiter);
+        continue;
+      }
+      settleChoiceWaiter(waiter, selectedChoiceResult({
+        choice,
+        chatId: message.chatId,
+        messageId: waiter.messageId || message.messageId,
+        userId: message.userId,
+        timestamp: message.receivedAt || message.date,
+        source: "text",
+        requestId: waiter.requestId
+      }));
+    } catch (error) {
+      releaseChoiceWaiter(waiter);
+      throw error;
+    }
   }
 }
 
@@ -869,13 +1056,19 @@ async function takeMatchingChoiceMessage(waiter) {
   return withTelegramStateLock(async () => {
     const state = readTelegramState();
     const index = state.inbox.findIndex((message) => {
-      return message.chatId === waiter.chatId && Boolean(findChoiceByText(waiter.choices, message.text));
+      return isChoiceTextMessageForWaiter(message, waiter);
     });
     if (index < 0) return null;
     const [message] = state.inbox.splice(index, 1);
     writeTelegramState(state);
     return message;
   });
+}
+
+function isChoiceTextMessageForWaiter(message, waiter) {
+  if (!message || message.source === "button" || message.choiceRequestId) return false;
+  return message.chatId === waiter.chatId &&
+    Boolean(findChoiceByText(waiter.choices, message.text));
 }
 
 async function processChoiceCallbacks(updates, targetWaiter) {
@@ -886,10 +1079,9 @@ async function processChoiceCallbacks(updates, targetWaiter) {
     if (!parsed || parsed.requestId !== targetWaiter.requestId) continue;
 
     const waiter = findChoiceWaiter(parsed.requestId, callback);
-    if (!waiter || waiter.done) {
-      await answerChoiceCallback(callback.id, "선택이 이미 처리되었거나 만료되었습니다.");
-      continue;
-    }
+    // Leave settled or unknown selections unclaimed so the monitor's orphan
+    // callback sweep answers them and relays the choice into the session.
+    if (!waiter || waiter.done || waiter.settling) continue;
 
     const choice = waiter.choices[parsed.index];
     if (!choice) {
@@ -899,11 +1091,19 @@ async function processChoiceCallbacks(updates, targetWaiter) {
 
     const chatId = callback.message && callback.message.chat && String(callback.message.chat.id);
     if (!allowedChatIds().has(chatId)) continue;
-    const claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
-    if (!claimed) continue;
-    await answerChoiceCallback(callback.id, `선택됨: ${choice.label}`);
-    await updateChoiceMessage(callback, waiter.question, choice.label);
-    settleChoiceWaiter(waiter, selectedChoiceResult({
+    if (!reserveChoiceWaiter(waiter)) continue;
+    let claimed;
+    try {
+      claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
+    } catch (error) {
+      releaseChoiceWaiter(waiter);
+      throw error;
+    }
+    if (!claimed) {
+      releaseChoiceWaiter(waiter);
+      continue;
+    }
+    const result = selectedChoiceResult({
       choice,
       chatId: callback.message && callback.message.chat && callback.message.chat.id,
       messageId: callback.message && callback.message.message_id,
@@ -911,7 +1111,18 @@ async function processChoiceCallbacks(updates, targetWaiter) {
       timestamp: new Date().toISOString(),
       source: "button",
       requestId: waiter.requestId
-    }));
+    });
+    let messageUpdated = false;
+    try {
+      await markChoicePrompt(chatId, callback.message && callback.message.message_id, "settled");
+      await answerChoiceCallback(callback.id, `선택됨: ${choice.label}`);
+      messageUpdated = await updateChoiceMessage(callback, waiter.question, choice.label);
+    } finally {
+      if (!messageUpdated) {
+        await releaseBrokerUpdate(update.update_id, waiter.subscriberId).catch(() => false);
+      }
+      settleChoiceWaiter(waiter, result);
+    }
   }
 }
 
@@ -924,10 +1135,19 @@ async function processChoiceTextUpdates(updates, waiter) {
     if (!chatId || chatId !== waiter.chatId || !allowedChatIds().has(chatId)) continue;
     const choice = findChoiceByText(waiter.choices, sanitize(text || ""));
     if (!choice) continue;
-    const claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
-    if (!claimed) continue;
-    await removeInboxUpdate(update.update_id);
-    settleChoiceWaiter(waiter, selectedChoiceResult({
+    if (!reserveChoiceWaiter(waiter)) continue;
+    let claimed;
+    try {
+      claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
+    } catch (error) {
+      releaseChoiceWaiter(waiter);
+      throw error;
+    }
+    if (!claimed) {
+      releaseChoiceWaiter(waiter);
+      continue;
+    }
+    const result = selectedChoiceResult({
       choice,
       chatId,
       messageId: waiter.messageId || message.message_id,
@@ -935,7 +1155,12 @@ async function processChoiceTextUpdates(updates, waiter) {
       timestamp: message.date ? new Date(Number(message.date) * 1000).toISOString() : new Date().toISOString(),
       source: "text",
       requestId: waiter.requestId
-    }));
+    });
+    try {
+      await removeInboxUpdate(update.update_id);
+    } finally {
+      settleChoiceWaiter(waiter, result);
+    }
     return;
   }
 }
@@ -955,6 +1180,7 @@ function findChoiceWaiter(requestId, callback) {
   const messageId = callback && callback.message && Number(callback.message.message_id || 0);
   return Array.from(choiceWaiters).find((waiter) => {
     return waiter.requestId === requestId &&
+      !waiter.settling &&
       (!chatId || waiter.chatId === chatId) &&
       (!messageId || !waiter.messageId || waiter.messageId === messageId);
   }) || null;
@@ -973,32 +1199,80 @@ async function updateChoiceMessage(callback, question, label) {
   const message = callback && callback.message;
   const chatId = message && message.chat && message.chat.id;
   const messageId = message && message.message_id;
-  if (!chatId || !messageId) return;
-  const updated = await telegramApi("editMessageText", {
+  return replaceChoiceMessageText(chatId, messageId, choiceSelectionText(question, label));
+}
+
+async function expireChoiceMessage(chatId, messageId, question) {
+  return replaceChoiceMessageText(chatId, messageId, choiceExpiredText(question));
+}
+
+async function replaceChoiceMessageText(chatId, messageId, text) {
+  if (!chatId || !messageId) return false;
+  const updated = text
+    ? await telegramApi("editMessageText", {
+        chat_id: chatId,
+        message_id: messageId,
+        text,
+        disable_web_page_preview: true,
+        reply_markup: { inline_keyboard: [] }
+      }).then(() => true).catch(telegramEditAlreadyApplied)
+    : false;
+  if (updated) return true;
+  return clearChoiceKeyboard(chatId, messageId);
+}
+
+async function clearChoiceKeyboard(chatId, messageId) {
+  if (!chatId || !messageId) return false;
+  const cleared = await telegramApi("editMessageReplyMarkup", {
     chat_id: chatId,
     message_id: messageId,
-    text: choiceSelectionText(question, label),
-    disable_web_page_preview: true,
     reply_markup: { inline_keyboard: [] }
-  }).then(() => true).catch(() => false);
-  if (updated) return;
-  await telegramApi("editMessageReplyMarkup", {
-    chat_id: chatId,
-    message_id: messageId,
-    reply_markup: { inline_keyboard: [] }
-  }).catch(() => {});
-  await telegramApi("editMessageReplyMarkup", {
+  }).then(() => true).catch(telegramEditAlreadyApplied);
+  if (cleared) return true;
+  return telegramApi("editMessageReplyMarkup", {
     chat_id: chatId,
     message_id: messageId
-  }).catch(() => {});
+  }).then(() => true).catch(telegramEditAlreadyApplied);
+}
+
+function telegramEditAlreadyApplied(error) {
+  return /message is not modified/i.test(String(error && error.message || ""));
+}
+
+function armChoiceTimeout(waiter) {
+  if (waiter.done || waiter.settling) return;
+  clearTimeout(waiter.timer);
+  const remainingMs = Math.max(0, Number(waiter.deadlineAt || 0) - Date.now());
+  waiter.timer = setTimeout(() => {
+    if (!reserveChoiceWaiter(waiter)) return;
+    settleChoiceWaiter(waiter, timeoutChoiceResult({
+      chatId: waiter.chatId,
+      messageId: waiter.messageId,
+      requestId: waiter.requestId
+    }));
+  }, remainingMs);
+}
+
+function reserveChoiceWaiter(waiter) {
+  if (!waiter || waiter.done || waiter.settling) return false;
+  waiter.settling = true;
+  clearTimeout(waiter.timer);
+  waiter.timer = null;
+  return true;
+}
+
+function releaseChoiceWaiter(waiter) {
+  if (!waiter || waiter.done || !waiter.settling) return;
+  waiter.settling = false;
+  armChoiceTimeout(waiter);
 }
 
 function settleChoiceWaiter(waiter, result) {
   if (waiter.done) return;
   waiter.done = true;
+  waiter.settling = true;
   clearTimeout(waiter.timer);
   choiceWaiters.delete(waiter);
-  void removeBrokerSubscription(waiter.subscriberId);
   waiter.resolve(result);
 }
 
@@ -1035,8 +1309,13 @@ module.exports = {
   parseApprovalDecision,
   _test: {
     buildAllowedMessages,
+    callbackButtonLabel,
     downloadTelegramFileContent,
     formatIncomingMessageText,
-    incomingMediaFromMessage
+    handleOrphanCallbacks,
+    incomingMediaFromMessage,
+    isChoiceTextMessageForWaiter,
+    isInboxReplyMessage,
+    pollAndProcessTelegramUpdates
   }
 };

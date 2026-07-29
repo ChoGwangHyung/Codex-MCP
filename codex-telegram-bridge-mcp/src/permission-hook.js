@@ -25,6 +25,7 @@ const { telegramApi } = require("./telegram.js");
 const {
   approvalReplyMarkup,
   approvalRequestText,
+  approvalSubscriberId,
   createApprovalCode,
   parseApprovalCallbackData,
   parseApprovalDecision,
@@ -317,7 +318,7 @@ async function requestTelegramPermissionApproval({
   now
 }) {
   const code = createApprovalCode();
-  const subscriberId = `permission:${code}`;
+  const subscriberId = approvalSubscriberId(code);
   const startedAt = now();
   await syncTelegramOffset(telegramApiFn);
   await createBrokerSubscription(subscriberId, {
