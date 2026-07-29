@@ -1,8 +1,8 @@
 # Codex MCP
 
-Codex MCP는 Codex 운영 워크플로에 쓰는 작은 MCP 서버 모음입니다.
-각 서버는 독립 패키지로 유지해서 프로젝트별로 필요한 도구만 켤 수 있게
-구성했습니다.
+Codex MCP는 Codex 운영 워크플로에 쓰는 작은 MCP 서버 및 hook 모음입니다.
+각 패키지는 독립적으로 유지해서 프로젝트별로 필요한 도구나 알림만 켤 수
+있게 구성했습니다.
 
 기본 영어 문서: [README.md](README.md)
 
@@ -48,8 +48,10 @@ npm run release:check
 ```
 
 `check`는 패키지 테스트를 실행합니다. `release:check`는 npm tarball 포함 파일,
-JSON-RPC 초기화와 `tools/list`, diff 공백 오류, 시크릿과 개인 환경 문자열까지
-확인합니다. CI도 Windows/Linux와 Node.js 20/22 조합으로 같은 검증을 수행합니다.
+JSON-RPC 초기화와 `tools/list`, diff 공백 오류, 현재 파일과 staged index blob의
+시크릿 및 개인 환경 문자열까지 확인합니다. CI도 Windows/Linux/macOS와 Node.js
+20/22 조합으로 같은 검증을
+수행합니다.
 
 ## 보안
 

@@ -6,9 +6,18 @@ const os = require("node:os");
 const path = require("node:path");
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-telegram-permission-hook-"));
+const accessFile = path.join(tempDir, "access.json");
+fs.writeFileSync(accessFile, JSON.stringify({
+  dmPolicy: "allowlist",
+  allowFrom: ["12345"],
+  approvalByChat: { "-1001": ["999"] },
+  groups: {},
+  pending: {}
+}));
 process.env.CODEX_TELEGRAM_BRIDGE_ENABLED = "1";
 process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
 process.env.TELEGRAM_ALLOWED_CHAT_IDS = "12345";
+process.env.CODEX_TELEGRAM_BRIDGE_ACCESS_FILE = accessFile;
 process.env.CODEX_TELEGRAM_BRIDGE_STATE_FILE = path.join(tempDir, "telegram-state.json");
 process.env.CODEX_TELEGRAM_BROKER_STATE_FILE = path.join(tempDir, "broker-state.json");
 
@@ -26,13 +35,18 @@ const {
   parseApprovalDecision
 } = require("../src/approval.js");
 const { readTelegramState, writeTelegramState } = require("../src/state.js");
+const { approvalUserAllowed } = require("../src/config.js");
+
+assert.equal(approvalUserAllowed("12345", "12345"), true);
+assert.equal(approvalUserAllowed("-1001", "999"), true);
+assert.equal(approvalUserAllowed("-1001", "777"), false);
 
 assert.equal(parseApprovalDecision("approve abc123", "abc123"), "approved");
 assert.equal(parseApprovalDecision("승인 abc123", "abc123"), "approved");
 assert.equal(parseApprovalDecision("deny abc123", "abc123"), "denied");
 assert.equal(parseApprovalDecision("거부 abc123", "abc123"), "denied");
-assert.equal(parseApprovalDecision("approve", "abc123"), "approved");
-assert.equal(parseApprovalDecision("거부", "abc123"), "denied");
+assert.equal(parseApprovalDecision("approve", "abc123"), "");
+assert.equal(parseApprovalDecision("거부", "abc123"), "");
 assert.equal(parseApprovalDecision("always approve abc123", "abc123"), "always_approved");
 assert.equal(parseApprovalDecision("항상 승인 abc123", "abc123"), "always_approved");
 assert.equal(parseApprovalDecision("approve deadbe", "abc123"), "");
@@ -124,12 +138,12 @@ async function telegramApiFn(method, payload) {
       update_id: nextUpdateId++,
       callback_query: {
         id: "callback-1",
-        from: { id: 777, username: "tester" },
+        from: { id: 12345, username: "tester" },
         data: approvalCallbackData,
         message: {
           message_id: 20,
           date: Math.floor(Date.now() / 1000),
-          chat: { id: 12345 }
+          chat: { id: 12345, type: "private" }
         }
       }
     }];
@@ -138,6 +152,27 @@ async function telegramApiFn(method, payload) {
 }
 
 (async () => {
+  const partialCalls = [];
+  await assert.rejects(
+    requestTelegramPermissionApproval({
+      chatIds: ["12345", "67890"],
+      title: request.title,
+      message: request.message,
+      timeoutMs: 5000,
+      telegramApiFn: async (method, payload) => {
+        partialCalls.push({ method, payload });
+        if (method === "sendMessage" && String(payload.chat_id) === "67890") {
+          throw new Error("send failed");
+        }
+        if (method === "sendMessage") return { message_id: 44 };
+        return true;
+      },
+      now: () => Date.now()
+    }),
+    /Failed to send Telegram approval to 1 of 2 chats/
+  );
+  assert.ok(partialCalls.some((call) => call.method === "editMessageReplyMarkup" && String(call.payload.chat_id) === "12345"));
+
   const approval = await requestTelegramPermissionApproval({
     chatIds: ["12345"],
     title: request.title,
@@ -266,12 +301,12 @@ function callbackUpdate(updateId, callbackId, data) {
     update_id: updateId,
     callback_query: {
       id: callbackId,
-      from: { id: 777 },
+      from: { id: 12345 },
       data,
       message: {
         message_id: 30,
         date: Math.floor(Date.now() / 1000),
-        chat: { id: 12345 }
+        chat: { id: 12345, type: "private" }
       }
     }
   };

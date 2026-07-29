@@ -27,17 +27,50 @@ const RECORD_TTL_MS = 24 * 60 * 60 * 1000;
 const SUBSCRIBER_STALE_MS = 60 * 60 * 1000;
 const ORPHAN_CLAIM_STALE_MS = 2 * 60 * 1000;
 const MAX_RECORDS = 2000;
+// Liveness only has to stay well inside CONSUMER_STALE_MS. Rewriting the
+// heartbeat on every single poll made an idle wait loop dirty the state file
+// continuously, which defeats the unchanged-state write skip below.
+const HEARTBEAT_RESOLUTION_MS = 20000;
 
-function monitorConsumer(cwd = process.cwd()) {
+function heartbeat(previous, resolutionMs = HEARTBEAT_RESOLUTION_MS) {
+  const seenAt = Date.parse(previous || "");
+  if (Number.isFinite(seenAt) && Date.now() - seenAt < resolutionMs) return previous;
+  return new Date().toISOString();
+}
+
+const consumerCache = new Map();
+
+// Two realpath syscalls plus a SHA-256 per call, and the broker asks for this
+// several times per poll cycle. The inputs are all in the cache key, so a
+// changed cwd, session, or state path still produces a fresh identity.
+function monitorConsumer(cwd = process.cwd(), sessionId = "") {
+  const configuredSession = String(
+    sessionId ||
+    process.env.CODEX_TELEGRAM_CODEX_THREAD_ID ||
+    process.env.CODEX_THREAD_ID ||
+    process.env.CODEX_SESSION_ID ||
+    ""
+  ).trim();
+  const statePath = telegramStatePath();
+  const cacheKey = `${cwd}\0${configuredSession}\0${statePath}`;
+  const cached = consumerCache.get(cacheKey);
+  if (cached) return cached;
+
   const canonicalCwd = canonicalPath(cwd);
-  const identity = `${canonicalPath(telegramStatePath())}\n${canonicalCwd}`;
+  const processIdentity = configuredSession || `process:${process.pid}`;
+  const identity = `${canonicalPath(statePath)}\n${canonicalCwd}\n${processIdentity}`;
   const id = crypto.createHash("sha256").update(identity).digest("hex").slice(0, 16);
-  return {
+  const consumer = {
     id,
     shortId: id.slice(0, 8),
     label: path.basename(canonicalCwd) || "Codex",
-    cwd: canonicalCwd
+    cwd: canonicalCwd,
+    sessionId: configuredSession,
+    processId: configuredSession ? 0 : process.pid
   };
+  if (consumerCache.size > 32) consumerCache.clear();
+  consumerCache.set(cacheKey, consumer);
+  return consumer;
 }
 
 async function pollBrokerUpdates(telegramApiFn, timeoutSeconds, options = {}) {
@@ -100,7 +133,7 @@ async function consumeBrokerUpdates(subscriberId, options = {}) {
     const available = state.records.filter((record) => Number(record.sequence) > cursor);
     const latest = available.length ? Number(available[available.length - 1].sequence) : cursor;
     subscriber.cursor = latest;
-    subscriber.lastSeenAt = new Date().toISOString();
+    subscriber.lastSeenAt = heartbeat(subscriber.lastSeenAt);
     state.subscribers[id] = subscriber;
 
     if (options.mode === "monitor") {
@@ -358,7 +391,9 @@ function interceptedRouteConsumer(state, chatId) {
       if (!subscriber || subscriber.interceptMessages !== true) return false;
       if (!Array.isArray(subscriber.chatIds) || !subscriber.chatIds.includes(String(chatId))) return false;
       const expiresAt = Date.parse(subscriber.expiresAt || "");
-      return subscriber.routeConsumerId && (!Number.isFinite(expiresAt) || expiresAt > now);
+      return subscriber.routeConsumerId &&
+        consumerIsLiveAt(state.consumers[subscriber.routeConsumerId], now) &&
+        (!Number.isFinite(expiresAt) || expiresAt > now);
     })
     .sort((left, right) => Date.parse(right.createdAt || "") - Date.parse(left.createdAt || ""))[0]?.routeConsumerId || "";
 }
@@ -368,7 +403,15 @@ function routeUnassignedRecords(state, consumerId) {
   if (!consumer) return;
   for (const record of state.records) {
     const chatId = updateChatId(record.update);
-    if (record.control || record.routeConsumerId || !chatId) continue;
+    const routedConsumer = state.consumers[record.routeConsumerId];
+    const isCallback = Boolean(record.update && record.update.callback_query);
+    const handled = String(record.claimedBy || "").startsWith("handled:");
+    if (
+      record.control ||
+      handled ||
+      !chatId ||
+      (record.routeConsumerId && (isCallback || consumerIsLive(routedConsumer)))
+    ) continue;
     if (!consumer.allowedChatIds.includes(chatId)) continue;
     record.routeConsumerId = callbackRouteConsumer(state, record.update, chatId) ||
       routeConsumer(state, chatId, consumerId);
@@ -387,12 +430,15 @@ function callbackRouteConsumer(state, update, chatId) {
 }
 
 function registerConsumer(state, consumer, allowedChatIds) {
+  const existing = state.consumers[consumer.id];
   state.consumers[consumer.id] = {
     id: consumer.id,
     label: consumer.label,
     cwd: consumer.cwd,
+    sessionId: String(consumer.sessionId || ""),
+    processId: normalizeProcessId(consumer.processId),
     allowedChatIds,
-    lastSeenAt: new Date().toISOString()
+    lastSeenAt: heartbeat(existing && existing.lastSeenAt)
   };
 }
 
@@ -408,7 +454,24 @@ function consumerIsLive(consumer) {
 
 function consumerIsLiveAt(consumer, now) {
   const seenAt = Date.parse(consumer && consumer.lastSeenAt || "");
-  return Number.isFinite(seenAt) && now - seenAt <= CONSUMER_STALE_MS;
+  if (!Number.isFinite(seenAt) || now - seenAt > CONSUMER_STALE_MS) return false;
+  if (String(consumer && consumer.sessionId || "")) return true;
+  const processId = normalizeProcessId(consumer && consumer.processId);
+  return processId > 0 && processIsRunning(processId);
+}
+
+function processIsRunning(processId) {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && error.code === "EPERM");
+  }
+}
+
+function normalizeProcessId(value) {
+  const processId = Number(value);
+  return Number.isInteger(processId) && processId > 0 ? processId : 0;
 }
 
 function updateChatId(update) {
@@ -455,6 +518,8 @@ function normalizeConsumers(value) {
       id: String(consumer.id || id),
       label: String(consumer.label || "Codex"),
       cwd: String(consumer.cwd || ""),
+      sessionId: String(consumer.sessionId || ""),
+      processId: normalizeProcessId(consumer.processId),
       allowedChatIds: normalizeStringList(consumer.allowedChatIds),
       lastSeenAt: String(consumer.lastSeenAt || "")
     }]];
@@ -475,7 +540,16 @@ function pruneBrokerState(state) {
   }
   for (const [id, consumer] of Object.entries(state.consumers)) {
     const seen = Date.parse(consumer && consumer.lastSeenAt || "");
-    if (Number.isFinite(seen) && now - seen > RECORD_TTL_MS) delete state.consumers[id];
+    const processBound = !String(consumer && consumer.sessionId || "");
+    if (
+      (processBound && !consumerIsLiveAt(consumer, now)) ||
+      (Number.isFinite(seen) && now - seen > RECORD_TTL_MS)
+    ) {
+      delete state.consumers[id];
+    }
+  }
+  for (const [chatId, consumerId] of Object.entries(state.chatRoutes)) {
+    if (!state.consumers[consumerId]) delete state.chatRoutes[chatId];
   }
   state.records = state.records
     .filter((record) => {
@@ -493,12 +567,18 @@ async function inspectBrokerState(read) {
   return withFileLock(brokerLockPath(), async () => read(readBrokerState()));
 }
 
+// Read-shaped callers (cursor polls that find nothing new) run through here
+// too, and the state file holds up to MAX_RECORDS full Telegram updates.
+// Comparing the serialized form is far cheaper than the temp-write plus rename
+// it avoids, so an unchanged state is never written back.
 async function updateBrokerState(update) {
   return withFileLock(brokerLockPath(), async () => {
     const state = readBrokerState();
+    const before = JSON.stringify(normalizeBrokerState(state));
     pruneBrokerState(state);
     const result = await update(state);
-    writeBrokerState(state);
+    const after = JSON.stringify(normalizeBrokerState(state));
+    if (after !== before || !brokerStateFileExists()) writeBrokerState(after);
     return result;
   });
 }
@@ -512,12 +592,30 @@ function readBrokerState() {
   }
 }
 
-function writeBrokerState(state) {
+function brokerStateFileExists() {
+  try {
+    return fs.statSync(brokerStatePath()).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function writeBrokerState(serialized) {
   const file = brokerStatePath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const payload = typeof serialized === "string"
+    ? serialized
+    : JSON.stringify(normalizeBrokerState(serialized));
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(normalizeBrokerState(state), null, 2));
+  fs.writeFileSync(temp, payload, { mode: 0o600 });
   fs.renameSync(temp, file);
+  if (process.platform !== "win32") {
+    try {
+      fs.chmodSync(file, 0o600);
+    } catch {
+      // Permission hardening is best effort on filesystems without POSIX modes.
+    }
+  }
 }
 
 function brokerStatePath() {
@@ -556,6 +654,7 @@ module.exports = {
     brokerStatePath,
     callbackSubscriberId,
     canonicalPath,
+    consumerIsLiveAt,
     normalizeBrokerState,
     parseRoutingCommand,
     updateChatId

@@ -14,7 +14,7 @@ general-purpose Telegram bot framework.
 | `telegram_send` | Send a message to an allowlisted Telegram chat. |
 | `telegram_send_file` | Send any file type from a local path, URL, or Telegram file ID. |
 | `telegram_send_photo` | Send a photo from a local path, URL, or Telegram file ID. |
-| `telegram_send_document` | Send a file/document from a local path, URL, or Telegram file ID. |
+| `telegram_send_document` | Alias of `telegram_send_file`, kept for compatibility. |
 | `telegram_wait_reply` | Wait for one reply from an allowlisted chat. |
 | `telegram_ask` | Send a message and wait for one reply. |
 | `telegram_inbox_read` | Read or consume messages captured by the receive monitor. |
@@ -123,6 +123,9 @@ CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
 # Optional inbound media limit:
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
+# Optional API and inbound download deadlines:
+# CODEX_TELEGRAM_API_TIMEOUT_MS=30000
+# CODEX_TELEGRAM_DOWNLOAD_TIMEOUT_MS=120000
 # Optional delay before the monitor takes over a button press that no
 # telegram_ask is waiting on any more; default is 5 seconds. Old prompts and
 # callbacks queued past the max age are acknowledged but never relayed.
@@ -243,7 +246,10 @@ telegram_monitor_status
 Use `telegram_send_file` for format-agnostic file delivery. It sends through
 Telegram's document path, so extensions such as `.apk`, `.md`, `.txt`, `.png`,
 `.jpeg`, `.zip`, and logs are handled the same way and preserve the original
-file. `telegram_send_document` is kept as an equivalent explicit document tool.
+file. `telegram_send_document` calls the same Telegram endpoint with the same
+arguments and differs only in the `type` it echoes back. Prefer
+`telegram_send_file`; the document tool is kept so existing callers keep working
+and will be removed in the next major version.
 
 Use `telegram_send_photo` only when you specifically want Telegram to render the
 image as a photo in chat. It shares the same local upload preparation logic, but
@@ -481,9 +487,15 @@ Behavior:
   configuration. Remove the Telegram runtime state file, or set
   `CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED=0`, to stop using stored always
   approvals.
-- Text fallback still accepts approval words such as `approve`, `승인`, `deny`,
-  or `거부` from the same allowlisted chat. It also accepts `always approve` or
-  `항상 승인` for the same bridge-side always-approval behavior.
+- Native permission approval is button-only. Free-form approval text is not
+  accepted because a hidden request code cannot safely disambiguate concurrent
+  requests. `telegram_ask` keeps its documented text fallback for ordinary
+  choices.
+- In a private chat, the clicking user must own that chat. In a group, only a
+  user recorded during pairing may decide an approval. Manually allowlisting a
+  group chat without pairing does not grant every group member approval rights.
+  Existing group chats configured before per-chat approvers were introduced
+  must be paired once again after upgrading.
 - If `CODEX_TELEGRAM_APPROVAL_CHAT_IDS` is set, requests go only to those
   allowlisted chats. Otherwise, requests go to all allowlisted chats.
 - If Telegram times out, the default behavior is `ask`, which falls back to the
@@ -506,7 +518,8 @@ telegram_approval_request
 ```
 
 The helper sends Telegram inline buttons for approve, always approve, and deny
-responses.
+responses. It validates the responding user before settling the request, so an
+unauthorized group member cannot remove the buttons or consume the approval.
 Use it only in workflows that deliberately call the tool.
 
 ## State Files
@@ -534,8 +547,15 @@ User-local fallback:
 Access JSON stores:
 
 - `allowFrom`: allowlisted Telegram chat IDs.
+- `approvalByChat`: Telegram user IDs recorded per chat during pairing for
+  approval authorization, especially in group chats.
 - `pending`: temporary pairing codes.
 - `dmPolicy`: `allowlist` or `disabled`.
+
+Setting `dmPolicy` to `disabled` disables runtime send, receive, relay, and
+approval behavior even when the token and allowlist remain present.
+`codex-telegram-configure remove <chat-id>` removes both the allowlist entry and
+the per-chat approver records.
 
 ## Multiple MCP Instances
 
@@ -545,16 +565,23 @@ time, every update is first stored in a shared local journal, and request-specif
 approval/choice subscribers read independently. This prevents another MCP
 process from stealing a callback and prevents state-file corruption.
 
+When Codex exposes a thread or session identifier, it is included in the broker
+consumer identity; otherwise the MCP process identity is used. This lets
+multiple sessions in the same working directory remain distinct instead of
+collapsing into one target.
+
 Normal Telegram messages are routed to one active Codex project per chat. Send
 `/sessions` to the bot to list live targets and `/use <id>` to select one. The
 route stays active while that target remains live; if it disappears, the next
-eligible monitor becomes active. `/sessions` and `/use` are broker control
-commands and are not injected into Codex. While `telegram_ask` or a permission
-approval is waiting for text fallback, that chat is temporarily routed to the
-most recently started requesting project, and request-specific subscribers
-ignore updates routed to another project. The chat returns to its prior active
-route afterward. Separate bot tokens are still the strongest isolation when
-chats must never share routing state.
+eligible monitor becomes active. Process-scoped consumers are checked against
+the local OS process table, so a restarted MCP does not wait for the normal
+broker stale interval before taking over pending messages. `/sessions` and
+`/use` are broker control
+commands and are not injected into Codex. While `telegram_ask` is waiting for a
+text fallback, that chat is temporarily routed to the requesting project, and
+request-specific subscribers ignore updates routed to another project. The chat
+returns to its prior active route afterward. Separate bot tokens are still the
+strongest isolation when chats must never share routing state.
 
 ## Security Notes
 
@@ -592,8 +619,10 @@ telegram_send_photo
 telegram_send_document
 telegram_wait_reply
 telegram_ask
+telegram_inbox_read
+telegram_approval_request
 ```
 
 ## License
 
-MIT. See the repository root `LICENSE`.
+MIT. See [LICENSE](LICENSE).

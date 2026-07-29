@@ -11,19 +11,52 @@ const LOCK_RETRY_MS = 100;
 const LOCK_WAIT_MS = 130000;
 
 function readTelegramState() {
+  const file = telegramStatePath();
+  let raw;
   try {
-    return normalizeTelegramState(JSON.parse(fs.readFileSync(telegramStatePath(), "utf8")));
-  } catch {
+    raw = fs.readFileSync(file, "utf8");
+  } catch (error) {
+    if (!error || error.code !== "ENOENT") {
+      process.stderr.write(`codex-telegram-bridge-mcp: cannot read ${file}: ${error && error.message}\n`);
+    }
     return normalizeTelegramState({});
+  }
+  try {
+    return normalizeTelegramState(JSON.parse(raw));
+  } catch (error) {
+    // Preserve a content-addressed snapshot without renaming the live path.
+    // Two readers can parse the same corrupt bytes concurrently; renaming here
+    // could otherwise move a healthy replacement written by the first reader.
+    quarantineStateFile(file, raw, error);
+    return normalizeTelegramState({});
+  }
+}
+
+function quarantineStateFile(file, raw, error) {
+  const digest = crypto.createHash("sha256").update(String(raw || "")).digest("hex").slice(0, 16);
+  const target = `${file}.corrupt-${digest}`;
+  try {
+    fs.writeFileSync(target, raw, { flag: "wx", mode: 0o600 });
+    restrictFilePermissions(target);
+    process.stderr.write(
+      `codex-telegram-bridge-mcp: ${file} was unreadable (${error && error.message}); preserved at ${target}\n`
+    );
+  } catch (writeError) {
+    if (!writeError || writeError.code !== "EEXIST") {
+      process.stderr.write(
+        `codex-telegram-bridge-mcp: could not preserve unreadable state ${file}: ${writeError && writeError.message}\n`
+      );
+    }
   }
 }
 
 function writeTelegramState(state) {
   const file = telegramStatePath();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const temp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(temp, JSON.stringify(normalizeTelegramState(state), null, 2));
+  fs.writeFileSync(temp, JSON.stringify(normalizeTelegramState(state)), { mode: 0o600 });
   fs.renameSync(temp, file);
+  restrictFilePermissions(file);
 }
 
 async function withTelegramStateLock(work) {
@@ -35,13 +68,16 @@ async function withTelegramUpdateLock(work) {
 }
 
 async function withFileLock(lock, work) {
-  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
   const startedAt = Date.now();
   let handle = null;
 
   while (!handle) {
     try {
       handle = await fs.promises.open(lock, "wx");
+      if (process.platform !== "win32") {
+        await handle.chmod(0o600).catch(() => {});
+      }
       try {
         await handle.writeFile(JSON.stringify({
           pid: process.pid,
@@ -54,7 +90,7 @@ async function withFileLock(lock, work) {
         throw error;
       }
     } catch (error) {
-      if (error && error.code !== "EEXIST") throw error;
+      if (!isLockContentionError(error)) throw error;
       await removeStaleLock(lock);
       if (Date.now() - startedAt > LOCK_WAIT_MS) {
         throw new Error(`Timed out waiting for Telegram lock: ${lock}`);
@@ -68,6 +104,24 @@ async function withFileLock(lock, work) {
   } finally {
     await handle.close().catch(() => {});
     await fs.promises.unlink(lock).catch(() => {});
+  }
+}
+
+function isLockContentionError(error) {
+  if (error && error.code === "EEXIST") return true;
+  return Boolean(
+    process.platform === "win32" &&
+    error &&
+    (error.code === "EPERM" || error.code === "EACCES")
+  );
+}
+
+function restrictFilePermissions(file) {
+  if (process.platform === "win32") return;
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    // Permission hardening is best effort on filesystems without POSIX modes.
   }
 }
 
@@ -89,13 +143,35 @@ function telegramTokenHash() {
     .slice(0, 16);
 }
 
+// The holder pid is written into the lock, so a lock left behind by a killed
+// process is reclaimed at once instead of stalling every other process for the
+// full LOCK_STALE_MS window.
 async function removeStaleLock(lock) {
   try {
     const stat = await fs.promises.stat(lock);
-    if (Date.now() - stat.mtimeMs < LOCK_STALE_MS) return;
+    const expired = Date.now() - stat.mtimeMs >= LOCK_STALE_MS;
+    if (!expired && !(await lockOwnerIsDead(lock))) return;
     await fs.promises.unlink(lock);
   } catch {
     // A competing process may have released the lock.
+  }
+}
+
+async function lockOwnerIsDead(lock) {
+  let owner;
+  try {
+    owner = JSON.parse(await fs.promises.readFile(lock, "utf8"));
+  } catch {
+    // A half-written or unreadable lock is left to the age-based path.
+    return false;
+  }
+  const pid = Number(owner && owner.pid);
+  if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return Boolean(error && error.code === "ESRCH");
   }
 }
 

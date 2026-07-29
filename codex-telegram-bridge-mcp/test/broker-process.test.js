@@ -14,7 +14,7 @@ const worker = [
   "const broker = require(process.argv[1]);",
   "const id = process.argv[2];",
   "broker.pollBrokerUpdates(async () => [], 0, {",
-  "  consumer: { id, shortId: id.slice(0, 8), label: `Project-${id}`, cwd: process.cwd() },",
+  "  consumer: { id, shortId: id.slice(0, 8), label: `Project-${id}`, cwd: process.cwd(), sessionId: id },",
   "  allowedChatIds: ['10']",
   "}).then(() => process.exit(0), (error) => { console.error(error); process.exit(1); });"
 ].join("\n");

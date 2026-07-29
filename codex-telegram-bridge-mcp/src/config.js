@@ -96,11 +96,13 @@ function relayReplyRequired() {
 
 function telegramEnabled() {
   return bridgeEnabled() &&
+    telegramPolicy() !== "disabled" &&
     Boolean(process.env.TELEGRAM_BOT_TOKEN) &&
     allowedChatIds().size > 0;
 }
 
 function allowedChatIds() {
+  if (telegramPolicy() === "disabled") return new Set();
   const configured = String(process.env.TELEGRAM_ALLOWED_CHAT_IDS || "")
     .split(",")
     .map((item) => item.trim())
@@ -109,12 +111,32 @@ function allowedChatIds() {
   return new Set([...configured, ...access.allowFrom]);
 }
 
+function approvalUserIds(chatId) {
+  const access = readAccess();
+  const users = access.approvalByChat && access.approvalByChat[String(chatId)];
+  return new Set(Array.isArray(users) ? users.map(String) : []);
+}
+
+function approvalUserAllowed(chatId, userId) {
+  const chat = String(chatId || "");
+  const user = String(userId || "");
+  if (!chat || !user) return false;
+  return chat === user || approvalUserIds(chat).has(user);
+}
+
+function telegramPolicy() {
+  return readAccess().dmPolicy === "disabled" ? "disabled" : "allowlist";
+}
+
 function assertTelegram(chatId) {
   if (!bridgeEnabled()) {
     throw new Error("Telegram bridge is disabled. Set CODEX_TELEGRAM_BRIDGE_ENABLED=1.");
   }
   if (!process.env.TELEGRAM_BOT_TOKEN) {
     throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
+  }
+  if (telegramPolicy() === "disabled") {
+    throw new Error("Telegram bridge policy is disabled.");
   }
   const allowed = allowedChatIds();
   if (!allowed.has(String(chatId))) {
@@ -212,17 +234,44 @@ function defaultAccess() {
   return {
     dmPolicy: "allowlist",
     allowFrom: [],
+    approvalByChat: {},
     groups: {}
   };
 }
 
+let accessCache = null;
+
+// allowedChatIds() sits in the poll loop and is called once per incoming
+// update, so the parse result is reused until the file's mtime or size moves.
+// The stat still runs on every call, so an edit is picked up immediately.
 function readAccess() {
+  const file = telegramAccessPath();
+  let signature = "";
   try {
-    const parsed = JSON.parse(fs.readFileSync(telegramAccessPath(), "utf8"));
+    const stat = fs.statSync(file);
+    signature = `${file}:${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    signature = `${file}:missing`;
+  }
+  if (accessCache && accessCache.signature === signature) return accessCache.value;
+  const value = loadAccess(file);
+  accessCache = { signature, value };
+  return value;
+}
+
+function loadAccess(file) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
     return {
       ...defaultAccess(),
       ...parsed,
       allowFrom: Array.isArray(parsed.allowFrom) ? parsed.allowFrom.map(String) : [],
+      approvalByChat: parsed.approvalByChat && typeof parsed.approvalByChat === "object"
+        ? Object.fromEntries(Object.entries(parsed.approvalByChat).map(([chatId, users]) => [
+            String(chatId),
+            Array.isArray(users) ? users.map(String) : []
+          ]))
+        : {},
       groups: parsed.groups && typeof parsed.groups === "object" ? parsed.groups : {}
     };
   } catch {
@@ -271,6 +320,9 @@ module.exports = {
   relayReplyRequired,
   telegramEnabled,
   allowedChatIds,
+  approvalUserIds,
+  approvalUserAllowed,
+  telegramPolicy,
   assertTelegram,
   bridgeEnabled,
   telegramConfigDir,

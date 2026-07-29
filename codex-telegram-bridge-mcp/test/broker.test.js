@@ -17,14 +17,31 @@ const {
   completeBrokerUpdate,
   consumeBrokerUpdates,
   createBrokerSubscription,
+  monitorConsumer,
   pollBrokerUpdates,
   releaseBrokerUpdate,
   retireBrokerSubscription,
   _test: brokerTest
 } = require("../src/broker.js");
 
-const consumerA = { id: "aaaaaaaaaaaaaaaa", shortId: "aaaaaaaa", label: "ProjectA", cwd: path.join(tempDir, "a") };
-const consumerB = { id: "bbbbbbbbbbbbbbbb", shortId: "bbbbbbbb", label: "ProjectB", cwd: path.join(tempDir, "b") };
+const sameCwdSessionA = monitorConsumer(tempDir, "session-a");
+const sameCwdSessionB = monitorConsumer(tempDir, "session-b");
+assert.notEqual(sameCwdSessionA.id, sameCwdSessionB.id);
+
+const consumerA = {
+  id: "aaaaaaaaaaaaaaaa",
+  shortId: "aaaaaaaa",
+  label: "ProjectA",
+  cwd: path.join(tempDir, "a"),
+  sessionId: "test-a"
+};
+const consumerB = {
+  id: "bbbbbbbbbbbbbbbb",
+  shortId: "bbbbbbbb",
+  label: "ProjectB",
+  cwd: path.join(tempDir, "b"),
+  sessionId: "test-b"
+};
 let batches = [];
 const api = async (method, payload) => {
   assert.equal(method, "getUpdates");
@@ -158,6 +175,31 @@ const api = async (method, payload) => {
   assert.equal(cleanup[0].deliverToSession, false);
   assert.equal(await completeBrokerUpdate(11, cleanup[0].claimId), true);
 
+  // A process-scoped consumer disappears immediately when its PID is gone.
+  // Pending normal messages are then reassigned to the newly polling session.
+  seedDeadRoutedMessage();
+  const replacement = {
+    id: "cccccccccccccccc",
+    shortId: "cccccccc",
+    label: "Replacement",
+    cwd: path.join(tempDir, "replacement"),
+    sessionId: "replacement"
+  };
+  batches.push([]);
+  await pollBrokerUpdates(api, 0, { consumer: replacement, allowedChatIds: ["20"] });
+  assert.equal(readBrokerRecord(12).routeConsumerId, replacement.id);
+  assert.equal(brokerTest.consumerIsLiveAt({
+    lastSeenAt: new Date().toISOString(),
+    processId: 2147483647
+  }, Date.now()), false);
+
+  // Pruning is itself a state change. It must be persisted even when the
+  // caller's update is otherwise a no-op.
+  await createBrokerSubscription("prune-probe", { startAtEnd: true, reset: true });
+  seedExpiredBrokerRecord();
+  await consumeBrokerUpdates("prune-probe");
+  assert.equal(readBrokerRecord(13), undefined, "expired records are removed from the persisted broker state");
+
   fs.writeFileSync(process.env.CODEX_TELEGRAM_BROKER_STATE_FILE, "{invalid-json");
   await assert.rejects(() => brokerStatus(consumerA.id), /Invalid Telegram broker state/);
 })().catch((error) => {
@@ -175,6 +217,55 @@ function backdateBrokerConsumer(consumerId, ageMs) {
   const state = JSON.parse(fs.readFileSync(file, "utf8"));
   state.consumers[consumerId].lastSeenAt = new Date(Date.now() - ageMs).toISOString();
   fs.writeFileSync(file, JSON.stringify(state, null, 2));
+}
+
+function seedDeadRoutedMessage() {
+  const file = process.env.CODEX_TELEGRAM_BROKER_STATE_FILE;
+  const state = JSON.parse(fs.readFileSync(file, "utf8"));
+  state.consumers.dead = {
+    id: "dead",
+    label: "Stopped",
+    cwd: path.join(tempDir, "stopped"),
+    sessionId: "",
+    processId: 2147483647,
+    allowedChatIds: ["20"],
+    lastSeenAt: new Date().toISOString()
+  };
+  state.chatRoutes["20"] = "dead";
+  state.subscribers["choice:dead"] = {
+    cursor: 0,
+    routeConsumerId: "dead",
+    chatIds: ["20"],
+    interceptMessages: true,
+    expiresAt: new Date(Date.now() + 60000).toISOString(),
+    createdAt: new Date().toISOString(),
+    lastSeenAt: new Date().toISOString()
+  };
+  state.records.push({
+    sequence: state.nextSequence,
+    updateId: 12,
+    receivedAt: new Date().toISOString(),
+    routeConsumerId: "dead",
+    control: false,
+    update: messageUpdate(12, "20", "after restart")
+  });
+  state.nextSequence += 1;
+  fs.writeFileSync(file, JSON.stringify(state, null, 2));
+}
+
+function seedExpiredBrokerRecord() {
+  const file = process.env.CODEX_TELEGRAM_BROKER_STATE_FILE;
+  const state = JSON.parse(fs.readFileSync(file, "utf8"));
+  state.records.push({
+    sequence: state.nextSequence,
+    updateId: 13,
+    receivedAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    routeConsumerId: "",
+    control: false,
+    update: messageUpdate(13, "10", "expired")
+  });
+  state.nextSequence += 1;
+  fs.writeFileSync(file, JSON.stringify(state));
 }
 
 function messageUpdate(updateId, chatId, text) {

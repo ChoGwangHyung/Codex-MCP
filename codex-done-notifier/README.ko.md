@@ -26,6 +26,9 @@ codex-done-notifier configure
 codex-done-notifier configure --global
 ```
 
+global hook은 local notifier hook이 없는 모든 프로젝트에 적용됩니다. 일부
+프로젝트에서만 알림을 쓰려면 각 프로젝트에서 local `configure`를 사용하세요.
+
 ## 이 저장소에서 설치
 
 ```powershell
@@ -49,8 +52,9 @@ resume하면 같은 hook도 다시 review 대상으로 보일 수 있습니다. 
 codex-done-notifier trust
 ```
 
-현재 hook hash를 일반 경로와 lowercase 경로 형태 모두로 `~/.codex/config.toml`에
-기록합니다.
+현재 Codex trust-state 형식에 맞춰 일반 경로와 lowercase 경로 형태를 best-effort로
+기록합니다. 최종 review 기준은 Codex `/hooks`이며, 이후 Codex 버전에서 다시
+review가 필요할 수 있습니다.
 
 ## 특정 프로젝트만 켜기
 
@@ -84,7 +88,10 @@ codex-done-notifier enable --sound-file .codex\done.wav
 ```
 
 Windows custom sound는 `System.Media.SoundPlayer`를 사용하므로 `.wav`가 가장
-안전합니다. macOS custom sound는 `afplay`로 재생합니다.
+안전합니다. macOS custom sound는 `afplay`로 재생합니다. Linux는 `paplay`,
+`aplay`, `ffplay`, `play` 순서로 시도합니다. local 설정의 상대 sound path는
+상대 경로로 보존한 뒤 hook input의 project working directory 기준으로 해석하고,
+global 설정은 절대 경로로 저장합니다.
 
 화면 알림은 유지하고 소리만 끄기:
 
@@ -97,6 +104,16 @@ codex-done-notifier enable --no-sound
 ```powershell
 codex-done-notifier enable --no-notification
 ```
+
+화면 알림 본문은 기본적으로 `<project> is done.`만 표시합니다. 최종 assistant
+응답의 첫 줄도 표시하려면 프로젝트에서 명시적으로 켭니다.
+
+```powershell
+codex-done-notifier enable --preview
+```
+
+preview는 잠금 화면에 응답 내용을 노출할 수 있습니다. 다시 끄려면
+`codex-done-notifier enable --no-preview`를 실행합니다.
 
 둘 다 꺼지면 프로젝트는 비활성 상태처럼 동작합니다. 이후 plain `enable`을
 실행하면 둘 다 다시 켜집니다. 하나만 끈 상태에서 전체 `disable`을 실행했다면,
@@ -136,7 +153,7 @@ codex resume
 | 명령 | 용도 |
 | --- | --- |
 | `configure` | 현재 프로젝트의 Codex `Stop` hook을 설치하고 알림을 켭니다. |
-| `configure --global` | user-level Codex `Stop` hook을 설치하고 현재 프로젝트 알림을 켭니다. |
+| `configure --global` | local override가 없는 프로젝트에 적용할 user-level Codex `Stop` hook을 설치합니다. |
 | `configure --no-enable` | hook을 비활성 상태로 설치합니다. |
 | `unconfigure` | 현재 프로젝트의 관리 hook block을 제거합니다. |
 | `unconfigure --global` | user-level 관리 hook block을 제거합니다. |
@@ -146,9 +163,11 @@ codex resume
 | `enable --sound-file <path>` | 현재 프로젝트의 sound file을 설정합니다. |
 | `enable --no-sound` 또는 `enable --notification-only` | 소리만 끕니다. |
 | `enable --no-notification` 또는 `enable --sound-only` | 화면 알림만 끕니다. |
+| `enable --preview` | 알림에 assistant 응답 첫 줄을 포함합니다. |
+| `enable --no-preview` | 알림 본문을 프로젝트 완료 문구로 제한합니다. |
 | `disable` | 현재 프로젝트에서 알림을 끕니다. |
 | `status` | hook과 현재 프로젝트 상태를 확인합니다. |
-| `trust` | 현재 hook trust hash를 Windows 경로 대소문자 variant까지 기록합니다. |
+| `trust` | trust state를 best-effort로 갱신합니다. 최종 기준은 Codex `/hooks`입니다. |
 | `test` | 테스트 알림을 보냅니다. |
 | `hook-snippet` | hook TOML snippet을 출력합니다. |
 
@@ -161,6 +180,12 @@ hook은 stdin으로 받은 Codex hook JSON을 읽고 다음 조건을 확인합�
 - `.codex/config.toml`에 저장된 관리 hook 옵션
 
 조건에 맞지 않으면 조용히 종료합니다.
+
+hook은 알림을 detached로 실행하고 실행 확인 직후 반환합니다. 따라서 PowerShell
+시작 시간, 소리 재생, 트레이 풍선 fallback이 Codex 턴 종료를 지연시키지 않습니다.
+`codex-done-notifier test`는 실제 exit code가 필요하므로 알림 프로세스가 끝날
+때까지 기다립니다. hook도 기다리게 하려면 `CODEX_DONE_NOTIFIER_WAIT=1`,
+`test`가 기다리지 않게 하려면 `CODEX_DONE_NOTIFIER_WAIT=0`을 설정하세요.
 
 ## 문제 확인
 
@@ -182,7 +207,7 @@ resume 뒤 같은 Stop hook을 계속 review하라고 나오면 Windows 경로 �
 폴더에서 `codex-done-notifier trust`를 실행한 뒤 세션을 한 번 `exit` 후
 `resume`하세요.
 
-`test`가 `sent`를 출력하는데도 아무 알림이 없다면 hook 실행 자체는 가능한
+`test`가 `dispatched`를 출력하는데도 아무 알림이 없다면 알림 process는 시작된
 상태이고, 대개 Windows Focus Assist, PowerShell/터미널 알림 차단, silent
 system sound scheme 같은 데스크톱 알림 환경 문제입니다. Windows에서는
 BurntToast module이 있으면 이를 사용하고, 없으면 tray balloon으로
@@ -199,8 +224,12 @@ fallback하며, custom `.wav`는 `enable --sound-file`로 지정할 수 있습�
   있으면 사용하며, 마지막으로 tray balloon notification으로 fallback합니다.
   sound는 built-in `.wav`, `[Console]::Beep`, 또는 custom `.wav` file을 사용합니다.
 - macOS: `osascript` notification과 system sound 또는 `afplay` file을 사용합니다.
-- Linux: 가능한 경우 `notify-send` notification을 사용합니다. sound playback은
-  기본 활성화하지 않습니다.
+- Linux: 가능한 경우 `notify-send` notification을 사용합니다. sound는 설정한
+  file player, `canberra-gtk-play`, terminal bell 순으로 fallback합니다.
+
+생성되는 hook command는 설치된 `codex-done-notifier` binary를 우선 사용합니다.
+source checkout에서는 binary가 없을 때 local script path로 fallback합니다.
+machine-specific hook command나 custom sound path는 공개 저장소에 커밋하지 마세요.
 
 ## 라이선스
 

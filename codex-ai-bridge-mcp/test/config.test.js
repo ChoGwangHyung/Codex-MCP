@@ -1,6 +1,9 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { validateTaskArgs } = require("../src/config.js");
 const {
   DEFAULT_SYNC_BUDGET_MS,
@@ -58,6 +61,11 @@ try {
     const args = validateTaskArgs({ prompt: "review this", model: "Gemini 3.1 Pro (high)" }, { provider: "antigravity" });
     assert.equal(args.model, "Gemini 3.1 Pro (high)");
   }
+
+  {
+    const args = validateTaskArgs({ prompt: "review this", preset: "review" }, { provider: "antigravity" });
+    assert.equal(args.effort, "high");
+  }
 } finally {
   if (originalClaudeModel === undefined) {
     delete process.env.CODEX_AI_BRIDGE_CLAUDE_MODEL;
@@ -99,6 +107,18 @@ try {
 }
 
 {
+  const args = validateTaskArgs({ prompt: "x", timeoutMs: 500, syncBudgetMs: 500 }, { provider: "claude" });
+  assert.equal(args.syncBudgetMs, 450);
+  assert.ok(args.syncBudgetMs > 0);
+}
+
+{
+  const args = validateTaskArgs({ prompt: "x", timeoutMs: 1, syncBudgetMs: 1 }, { provider: "claude" });
+  assert.equal(args.syncBudgetMs, 0);
+  assert.match(args.warnings.join("\n"), /wait-for-completion/);
+}
+
+{
   const args = validateTaskArgs({ prompt: "x", timeoutMs: 900000, syncBudgetMs: 0 }, { provider: "gemini" });
   assert.equal(args.syncBudgetMs, 0);
   assert.deepEqual(args.warnings, []);
@@ -113,3 +133,28 @@ assert.throws(
   () => validateTaskArgs({ prompt: "x", maxTurns: 0 }, { provider: "claude" }),
   /maxTurns must be an integer/
 );
+
+assert.throws(
+  () => validateTaskArgs({ prompt: "x", effort: "max" }, { provider: "antigravity" }),
+  /Antigravity effort/
+);
+
+assert.throws(
+  () => validateTaskArgs({ prompt: "x", effort: "high" }, { provider: "gemini" }),
+  /not supported/
+);
+
+{
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), "codex-ai-outside-"));
+  const link = path.join(process.cwd(), `__ai_bridge_escape_link_${process.pid}__`);
+  try {
+    fs.symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+    assert.throws(
+      () => validateTaskArgs({ prompt: "x", cwd: path.basename(link) }, { provider: "claude" }),
+      /after resolving links/
+    );
+  } finally {
+    fs.rmSync(link, { force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+}

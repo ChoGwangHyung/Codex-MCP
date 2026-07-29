@@ -5,6 +5,7 @@ const {
   DEFAULT_APPROVAL_TIMEOUT_MS
 } = require("./constants.js");
 const {
+  approvalUserAllowed,
   allowedChatIds,
   bridgeEnabled
 } = require("./config.js");
@@ -92,6 +93,10 @@ async function handlePermissionHook(input, options = {}) {
     chatIds,
     timeoutMs,
     approvalKey,
+    routeConsumerId: monitorConsumer(
+      extractCwd(input) || process.cwd(),
+      extractSessionId(input)
+    ).id,
     telegramApiFn: options.telegramApiFn || telegramApi,
     now: options.now || (() => Date.now())
   });
@@ -314,6 +319,7 @@ async function requestTelegramPermissionApproval({
   message,
   timeoutMs,
   approvalKey,
+  routeConsumerId,
   telegramApiFn,
   now
 }) {
@@ -324,7 +330,7 @@ async function requestTelegramPermissionApproval({
   await createBrokerSubscription(subscriberId, {
     startAtEnd: true,
     reset: true,
-    routeConsumerId: monitorConsumer(process.cwd()).id,
+    routeConsumerId: routeConsumerId || monitorConsumer(process.cwd()).id,
     chatIds,
     interceptMessages: true,
     expiresInMs: timeoutMs
@@ -336,7 +342,7 @@ async function requestTelegramPermissionApproval({
     while (now() < deadline) {
       const inboxDecision = await takeMatchingInboxDecision(chatIds, code, startedAt);
       if (inboxDecision) {
-        await claimBrokerUpdate(inboxDecision.updateId, subscriberId);
+        if (!(await claimBrokerUpdate(inboxDecision.updateId, subscriberId))) continue;
         await sendApprovalResult(telegramApiFn, inboxDecision, sentMessages);
         await forgetPendingApproval(approvalKey);
         return inboxDecision;
@@ -349,7 +355,7 @@ async function requestTelegramPermissionApproval({
         startedAt
       );
       if (brokerDecision) {
-        await claimBrokerUpdate(brokerDecision.updateId, subscriberId);
+        if (!(await claimBrokerUpdate(brokerDecision.updateId, subscriberId))) continue;
         await sendApprovalResult(telegramApiFn, brokerDecision, sentMessages);
         await forgetPendingApproval(approvalKey);
         return brokerDecision;
@@ -360,7 +366,7 @@ async function requestTelegramPermissionApproval({
       const updates = await consumeBrokerUpdates(subscriberId, { startAtEnd: true });
       const updateDecision = await storeUpdatesAndFindDecision(updates, chatIds, code, startedAt);
       if (updateDecision) {
-        await claimBrokerUpdate(updateDecision.updateId, subscriberId);
+        if (!(await claimBrokerUpdate(updateDecision.updateId, subscriberId))) continue;
         await sendApprovalResult(telegramApiFn, updateDecision, sentMessages);
         await forgetPendingApproval(approvalKey);
         return updateDecision;
@@ -376,7 +382,7 @@ async function requestTelegramPermissionApproval({
 
 async function sendApprovalRequest(telegramApiFn, chatIds, request) {
   const text = approvalRequestText(request);
-  return Promise.all(chatIds.map(async (chatId) => {
+  const outcomes = await Promise.allSettled(chatIds.map(async (chatId) => {
     const sent = await telegramApiFn("sendMessage", {
       chat_id: chatId,
       text,
@@ -385,6 +391,15 @@ async function sendApprovalRequest(telegramApiFn, chatIds, request) {
     });
     return { chatId: String(chatId), messageId: sent && sent.message_id, text };
   }));
+  const sentMessages = outcomes
+    .filter((outcome) => outcome.status === "fulfilled")
+    .map((outcome) => outcome.value);
+  const failed = outcomes.filter((outcome) => outcome.status === "rejected");
+  if (failed.length > 0) {
+    await clearApprovalButtons(telegramApiFn, sentMessages);
+    throw new Error(`Failed to send Telegram approval to ${failed.length} of ${outcomes.length} chats.`);
+  }
+  return sentMessages;
 }
 
 async function sendApprovalResult(telegramApiFn, result, sentMessages) {
@@ -545,6 +560,7 @@ async function takeMatchingInboxDecision(chatIds, code, startedAt) {
     const index = state.inbox.findIndex((message) => {
       if (!selected.has(String(message.chatId))) return false;
       if (!isMessageAfter(message, startedAt)) return false;
+      if (!approvalUserAllowed(message.chatId, message.userId)) return false;
       return Boolean(parseApprovalDecision(message.text, code));
     });
     if (index < 0) return null;
@@ -567,6 +583,7 @@ async function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
     const state = readTelegramState();
     const seen = new Set(state.inbox.map((message) => message.id));
     let decision = null;
+    let appended = false;
 
     for (const update of Array.isArray(updates) ? updates : []) {
       const callbackDecision = approvalCallbackFromUpdate(update, selected, code);
@@ -578,7 +595,11 @@ async function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
       const message = messageFromUpdate(update);
       if (!message || !allowed.has(message.chatId)) continue;
 
-      if (selected.has(message.chatId) && isMessageAfter(message, startedAt)) {
+      if (
+        selected.has(message.chatId) &&
+        isMessageAfter(message, startedAt) &&
+        approvalUserAllowed(message.chatId, message.userId)
+      ) {
         const parsedDecision = parseApprovalDecision(message.text, code);
         if (parsedDecision && !decision) {
           decision = {
@@ -595,10 +616,13 @@ async function storeUpdatesAndFindDecision(updates, chatIds, code, startedAt) {
       if (!seen.has(message.id)) {
         seen.add(message.id);
         state.inbox.push(message);
+        appended = true;
       }
     }
 
-    writeTelegramState(state);
+    // This runs on every poll of a pending approval, which can last minutes.
+    // An empty batch must not rewrite the whole state file.
+    if (appended) writeTelegramState(state);
     return decision;
   });
 }
@@ -607,7 +631,16 @@ function approvalCallbackFromUpdate(update, selected, code) {
   const callback = update && update.callback_query;
   const parsed = callback && parseApprovalCallbackData(callback.data, code);
   const chatId = callback && callback.message && callback.message.chat && String(callback.message.chat.id);
-  if (!parsed || !chatId || !selected.has(chatId) || !allowedChatIds().has(chatId)) return null;
+  const userId = callback && callback.from && callback.from.id !== undefined
+    ? String(callback.from.id)
+    : "";
+  if (
+    !parsed ||
+    !chatId ||
+    !selected.has(chatId) ||
+    !allowedChatIds().has(chatId) ||
+    !approvalUserAllowed(chatId, userId)
+  ) return null;
   return {
     decision: parsed.decision,
     chatId,
@@ -615,7 +648,7 @@ function approvalCallbackFromUpdate(update, selected, code) {
     source: "button",
     callbackQueryId: callback.id,
     messageId: callback.message && callback.message.message_id,
-    userId: callback.from && callback.from.id !== undefined ? String(callback.from.id) : "",
+    userId,
     updateId: Number(update.update_id || 0)
   };
 }
@@ -630,6 +663,8 @@ function messageFromUpdate(update) {
     updateId: Number(update.update_id || 0),
     messageId: Number(raw.message_id || 0),
     chatId,
+    userId: raw.from && raw.from.id !== undefined ? String(raw.from.id) : "",
+    chatType: String(raw.chat.type || ""),
     text,
     date: raw.date ? new Date(Number(raw.date) * 1000).toISOString() : "",
     receivedAt: new Date().toISOString(),

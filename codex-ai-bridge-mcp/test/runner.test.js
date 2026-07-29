@@ -1,7 +1,10 @@
 "use strict";
 
 const assert = require("node:assert/strict");
-const { runCommand } = require("../src/runner.js");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { runCommand, terminateAllChildren } = require("../src/runner.js");
 
 (async () => {
   const echo = await runCommand(process.execPath, ["-e", "process.stdin.pipe(process.stdout)"], {
@@ -56,6 +59,48 @@ const { runCommand } = require("../src/runner.js");
   assert.equal(timeout.timedOut, true);
   assert.equal(typeof timeout.pid, "number");
   assert.ok(timeout.elapsedMs >= 0);
+
+  const stubborn = await runCommand(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    {
+      cwd: process.cwd(),
+      timeoutMs: 1000,
+      input: ""
+    }
+  );
+  assert.equal(stubborn.ok, false);
+  assert.equal(stubborn.timedOut, true);
+  assert.ok(stubborn.elapsedMs < 5000, "a provider that ignores SIGTERM is force-killed");
+
+  const running = runCommand(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], {
+    cwd: process.cwd(),
+    timeoutMs: 0,
+    input: ""
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await terminateAllChildren();
+  const terminated = await running;
+  assert.equal(terminated.ok, false);
+
+  if (process.platform === "win32") {
+    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "codex-ai-runner-"));
+    const shimDir = path.join(temp, "shim dir");
+    const shim = path.join(shimDir, "bridge-test.cmd");
+    try {
+      fs.mkdirSync(shimDir);
+      fs.writeFileSync(shim, "@echo off\r\nnode -e \"process.stdout.write(process.argv[1] || '')\" \"%~1\"\r\n");
+      const shimResult = await runCommand(shim, ["100%done"], {
+        cwd: process.cwd(),
+        timeoutMs: 5000,
+        input: ""
+      });
+      assert.equal(shimResult.ok, true, shimResult.stderr || shimResult.error);
+      assert.equal(shimResult.stdout, "100%done");
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true });
+    }
+  }
 })().catch((error) => {
   console.error(error);
   process.exit(1);

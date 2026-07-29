@@ -17,7 +17,7 @@ function parseApprovalDecision(text, code) {
   const normalizedCode = String(code || "").trim().toLowerCase();
   if (!normalized) return "";
   const tokens = normalized.split(/\s+/).filter(Boolean);
-  if (normalizedCode && tokens.length > 1 && !tokens.includes(normalizedCode)) {
+  if (normalizedCode && !tokens.includes(normalizedCode)) {
     return "";
   }
   const withoutCode = normalizedCode

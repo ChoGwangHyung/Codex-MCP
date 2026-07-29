@@ -2,7 +2,7 @@
   "name": "codex-mcp",
   "version": "1.0.0",
   "private": true,
-  "description": "Workspace for Codex-focused MCP servers.",
+  "description": "Workspace for Codex-focused MCP servers and hooks.",
   "license": "MIT",
   "workspaces": [
     "codex-ai-bridge-mcp",

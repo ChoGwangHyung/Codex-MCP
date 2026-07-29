@@ -44,6 +44,7 @@ let relayLastInjectedAt = "";
 let relayLastThreadId = "";
 let relayLastConsolePid = "";
 let relayEndpointCache = { value: "", resolvedAt: 0 };
+let relayThreadCache = { endpoint: "", cwd: "", threadId: "", resolvedAt: 0 };
 const RELAY_INJECTING_STALE_MS = 120000;
 const RELAY_PENDING_REPLY_MAX = 100;
 
@@ -322,9 +323,55 @@ async function findRelayTargetThread() {
     return { endpoint, thread: response.thread };
   }
 
+  const targetCwd = relayTargetCwd();
+  // Discovery reads every loaded thread over its own socket connection, so it
+  // is resolved once per target and then re-verified with a single read. Live
+  // status still comes from that read; only the search is cached.
+  const cachedThread = await readCachedRelayThread(endpoint, targetCwd);
+  if (cachedThread) return { endpoint, thread: cachedThread };
+
+  const thread = await discoverRelayTargetThread(endpoint, targetCwd);
+  relayThreadCache = {
+    endpoint,
+    cwd: targetCwd,
+    threadId: String(thread.id || ""),
+    resolvedAt: Date.now()
+  };
+  return { endpoint, thread };
+}
+
+async function readCachedRelayThread(endpoint, targetCwd) {
+  if (!relayThreadCacheUsable(relayThreadCache, endpoint, targetCwd)) return null;
+  try {
+    const response = await appServerRequest(endpoint, "thread/read", {
+      threadId: relayThreadCache.threadId,
+      includeTurns: false
+    });
+    const thread = response.thread;
+    if (thread && normalizePath(thread.cwd) === targetCwd) return thread;
+  } catch {
+    // The thread was closed or the broker restarted; fall back to discovery.
+  }
+  relayThreadCache = { endpoint: "", cwd: "", threadId: "", resolvedAt: 0 };
+  return null;
+}
+
+function relayThreadCacheUsable(cache, endpoint, targetCwd, now = Date.now()) {
+  const resolvedAt = Number(cache && cache.resolvedAt || 0);
+  return Boolean(
+    cache &&
+    cache.endpoint === endpoint &&
+    cache.cwd === targetCwd &&
+    cache.threadId &&
+    resolvedAt > 0 &&
+    now >= resolvedAt &&
+    now - resolvedAt <= APP_SERVER_ENDPOINT_CACHE_MS
+  );
+}
+
+async function discoverRelayTargetThread(endpoint, targetCwd) {
   const loaded = await appServerRequest(endpoint, "thread/loaded/list", { limit: 50 });
   const ids = Array.isArray(loaded.data) ? loaded.data : [];
-  const targetCwd = relayTargetCwd();
   const candidates = [];
   for (const threadId of ids) {
     try {
@@ -345,7 +392,7 @@ async function findRelayTargetThread() {
   }
 
   candidates.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
-  return { endpoint, thread: candidates[0] };
+  return candidates[0];
 }
 
 async function injectMessageIntoCodexAppServer(endpoint, threadId, message) {
@@ -481,15 +528,6 @@ function flattenConsoleRelayText(value) {
     .join(" | ")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function relayReplyInstructionLines(message) {
-  const instruction = relayReplyInstructionLine(message);
-  return instruction ? ["", instruction] : [];
-}
-
-function relayReplyInstructionLine() {
-  return "";
 }
 
 function relayPendingReplyFromMessage(message) {
@@ -639,6 +677,8 @@ module.exports = {
   formatAppServerRelayInput,
   formatRelayPrompt,
   formatConsoleRelayPrompt,
-  relayReplyInstructionLines,
-  isApprovalDecisionRelayMessage
+  isApprovalDecisionRelayMessage,
+  _test: {
+    relayThreadCacheUsable
+  }
 };

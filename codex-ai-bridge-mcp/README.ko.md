@@ -62,10 +62,10 @@ CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "4"
 # CODEX_AI_BRIDGE_CLAUDE_EFFORT = "max"
 # Gemini: bridge 차원의 `effort`는 없습니다. 필요할 때 Gemini CLI 모델만 고릅니다.
 # CODEX_AI_BRIDGE_GEMINI_MODEL = "<gemini-model>"
-# Antigravity: 별도 `effort`가 없고 추론 강도는 모델 라벨에 포함됩니다.
-# 예: "Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (Medium)",
-# "Gemini 3.5 Flash (Low)", "Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (Low)"
+# Antigravity: `model`은 stable slug, `effort`는 low/medium/high입니다.
+# 현재 계정에서 쓸 수 있는 slug는 `agy models`로 확인합니다.
 # CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL = "<antigravity-model>"
+# CODEX_AI_BRIDGE_ANTIGRAVITY_EFFORT = "high"
 # MCP tool deadline이 엄격한 client에서 긴 리뷰를 돌릴 때:
 # CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS = "0"
 # CODEX_AI_BRIDGE_SYNC_BUDGET_MS = "120000"
@@ -75,7 +75,8 @@ Windows에서는 forward slash 또는 escape된 backslash를 사용하세요.
 
 작업별 `cwd`는 선택값입니다. 지정할 경우 `CODEX_AI_BRIDGE_ROOT` 아래의 실제
 존재하는 디렉터리로 resolve되어야 합니다. 애매하면 `cwd`를 생략해 project root에서
-provider를 실행하세요.
+provider를 실행하세요. 경계 검사는 symlink와 junction을 실제 경로로 resolve한
+뒤 수행합니다.
 
 npm global 설치로 사용할 경우 MCP command에 package binary를 지정할 수 있습니다.
 
@@ -125,13 +126,16 @@ Effort 값:
 low, medium, high, xhigh, max
 ```
 
+`cross_review`에서는 provider별 의미가 섞이지 않도록 `claudeEffort`와
+`antigravityEffort`를 사용합니다. 후자는 `low`, `medium`, `high`만 받습니다.
+
 Provider별 추론 강도 설정:
 
 | Provider | MCP 필드 | 추론 강도 조절 방식 | 참고 |
 | --- | --- | --- | --- |
 | Claude Code | `model`, `effort`, `maxTurns` | `effort`가 추론 강도를 조절합니다. `maxTurns`는 bridge 호출 1회 안에서 Claude CLI가 이어서 진행할 수 있는 내부 turn 한도입니다. | 넓은 리뷰 gate는 `effort: "max"`, `maxTurns: 4`를 권장합니다. `maxTurns: 1`은 엄격한 단일 turn probe에만 쓰세요. |
 | Gemini CLI | `model` | bridge 차원의 `effort`는 없습니다. Gemini CLI와 계정에서 제공하는 모델을 고릅니다. | `maxTurns`는 cross-provider schema 호환성을 위해 받지만 Gemini argv flag로 전달하지 않습니다. |
-| Antigravity CLI | `model` | 별도 `effort`나 reasoning flag가 없습니다. Antigravity가 `(Low)`, `(Medium)`, `(High)`, `(Thinking)` 같은 변형을 모델 라벨로 노출하면 정확한 라벨을 `model`에 넘깁니다. | `maxTurns`는 cross-provider schema 호환성을 위해 받지만 Antigravity argv flag로 전달하지 않습니다. |
+| Antigravity CLI | `model`, `effort` | `model`은 `agy models`의 stable slug를 받고 `effort`는 `low`, `medium`, `high`를 받습니다. | `maxTurns`는 cross-provider schema 호환성을 위해 받지만 Antigravity argv flag로 전달하지 않습니다. |
 
 우선순위:
 
@@ -140,6 +144,8 @@ Provider별 추론 강도 설정:
 - Gemini model: task `model` > `CODEX_AI_BRIDGE_GEMINI_MODEL` > Gemini CLI 기본값.
 - Antigravity model: task `model` > `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` > Antigravity CLI 기본값.
 - Claude effort: task `effort` > `CODEX_AI_BRIDGE_CLAUDE_EFFORT` > unset.
+- Antigravity effort: task `effort` > `CODEX_AI_BRIDGE_ANTIGRAVITY_EFFORT` >
+  review preset 기본값(`high`) > unset.
 - Provider max turns: task `maxTurns` > review preset 기본값(`4`) >
   `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` > policy 기본값(agentic은 `8`, 그 외는 `3`).
 
@@ -151,40 +157,46 @@ one-shot review gate는 보통 bridge tool 호출을 1회로 제한한다는 뜻
 `--max-turns 1`이라는 뜻은 아닙니다. 넓은 Fable/max 리뷰는 `4` 정도가
 실용적이고, `1`은 엄격한 단일 turn probe에만 쓰는 것을 권장합니다.
 
-Gemini와 Antigravity 작업은 `effort`를 받지 않습니다. Antigravity CLI 1.1.0은
-`--model`은 제공하지만 문서화된 `--effort`나 reasoning-effort flag는 없습니다.
-Antigravity가 추론 강도를 모델 라벨 변형으로 노출하는 경우에는
-`Gemini 3.5 Flash (Medium)` 또는 `Gemini 3.1 Pro (High)`처럼 정확한 라벨을
-`model`에 넘기면 됩니다.
-
-Antigravity 모델 라벨은 계정, 플랜, 지역, CLI 버전에 따라 바뀔 수 있습니다.
-로컬에서 가장 정확한 기준은 `agy models`이며, 이 명령이 출력하는 문자열을 그대로
-사용하세요. 공개 Antigravity 문서와 현재 CLI 튜토리얼에서 확인되는 라벨은 다음과
-같습니다.
+Gemini 작업은 `effort`를 받지 않습니다. 현재 Antigravity CLI는 `--model`과
+별도로 `--effort low|medium|high`를 제공합니다. 모델 가용성은 계정, 플랜,
+지역, CLI 버전에 따라 달라질 수 있으므로 `agy models`가 출력하는 stable slug를
+그대로 사용하세요. 최근 CLI 출력 예시는 다음과 같습니다.
 
 ```text
-Gemini 3.5 Flash (High)
-Gemini 3.5 Flash (Medium)
-Gemini 3.5 Flash (Low)
-Gemini 3.1 Pro (High)
-Gemini 3.1 Pro (Low)
-Gemini 3 Flash
-Claude Sonnet 4.6 (Thinking)
-Claude Opus 4.6 (Thinking)
-GPT-OSS 120B (Medium)
+gemini-3.6-flash-high
+gemini-3.6-flash-medium
+gemini-3.6-flash-low
+gemini-3.1-pro-high
+gemini-3.1-pro-low
+claude-sonnet-4-6
+claude-opus-4-6-thinking
+gpt-oss-120b-medium
 ```
 
-일부 Google 문서는 `Gemini 3.1 Pro (high)` 또는 `GPT-OSS-120b`처럼 설명형 이름으로
-표기합니다. MCP 호출에서는 설치된 CLI의 `agy models` 출력값을 우선하세요.
-
-## Review Preset
+## Preset
 
 `"preset": "review"`를 지정하면 긴 리뷰용 기본값을 사용합니다. Claude에서는 명시
 값이 없을 때 rolling alias인 `model: "fable"`, `effort: "max"`,
 `timeoutMs: 900000`,
 `syncBudgetMs: 120000`, `maxTurns: 4`를 적용합니다. `cross_review`에서는
 `maxTurns`가 Claude leg에 적용되고 Gemini/Antigravity leg에서도 schema 호환성을
-위해 허용됩니다.
+위해 허용됩니다. 각 review leg effort는 `claudeEffort` 또는
+`antigravityEffort`로 override합니다.
+
+`"preset": "quick"`은 짧은 질문용입니다. `timeoutMs: 120000`,
+`syncBudgetMs: 60000`, Claude와 Antigravity의 `effort: "low"`, Claude의
+`maxTurns: 2`를 적용합니다. 이 preset이 없으면 한 줄짜리 질문도 review 기본값을
+상속해 `jobId`를 받기까지 foreground에서 2분을 기다립니다. 명시한 필드는 항상
+preset보다 우선합니다.
+
+## 결과 크기
+
+provider 출력은 `maxOutputChars`(기본 `12000`) 문자로 자릅니다. 한도를 넘으면
+앞부분과 뒷부분을 남기고 그 사이에 생략된 문자 수를 표시하므로, 큰 답변이 이후
+작업 내내 transcript에 남지 않습니다. 한 번만 전체를 받으려면
+`"maxOutputChars": 0`을 전달하고, 기본값은 `CODEX_AI_BRIDGE_MAX_RESULT_CHARS`로
+바꿉니다. 실패 보고서의 stdout, stderr, provider log는 각각 훨씬 짧게 자릅니다.
+재현이 아니라 진단이 목적이기 때문입니다.
 
 ## Antigravity CLI
 
@@ -212,8 +224,7 @@ workspace search, file read, browser action, MCP call, subagent 사용 금지를
 로그인까지 증명하지는 않으므로, 설치나 재인증 뒤에는 짧은 `antigravity_task` smoke
 호출로 실제 응답을 확인하세요.
 
-Antigravity CLI에는 Gemini CLI의 `--approval-mode=plan`에 해당하는 옵션이 없으므로
-비-agentic 정책에서는 기본으로 `--sandbox`를 붙입니다.
+비-agentic 정책에서는 기본으로 `--mode plan`과 `--sandbox`를 함께 붙입니다.
 `CODEX_AI_BRIDGE_ANTIGRAVITY_SANDBOX=0`은 이 기본값을 끄고 싶을 때만 사용하세요.
 agentic 모드에서 Antigravity 권한 요청을 자동 승인하려면
 `CODEX_AI_BRIDGE_ALLOW_AGENTIC=1`과
@@ -233,15 +244,18 @@ agentic 모드에서 Antigravity 권한 요청을 자동 승인하려면
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | 기본 Claude 모델입니다. 추론 강도를 제어하려면 `CODEX_AI_BRIDGE_CLAUDE_EFFORT`와 함께 사용합니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | Claude 전용 기본 추론 effort입니다. 값은 `low`, `medium`, `high`, `xhigh`, `max`입니다. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | 기본 Claude CLI 내부 turn 한도입니다. bridge 호출 횟수가 아닙니다. 넓은 one-call 리뷰 gate는 `4`, 엄격한 단일 turn probe는 `1`을 권장합니다. |
+| `CODEX_AI_BRIDGE_CLAUDE_PERMISSION_MODE` | agentic Claude permission mode입니다. 기본값은 `acceptEdits`이며 비-agentic 호출은 항상 `plan`을 사용합니다. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | provider hard timeout입니다. 기본값은 `900000` ms입니다. `0`이면 hard timeout을 비활성화합니다. |
 | `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | background job id를 반환하기 전 foreground 대기 시간입니다. 기본값은 `120000` ms입니다. `0`이면 provider가 종료될 때까지 기다립니다. |
+| `CODEX_AI_BRIDGE_MAX_RESULT_CHARS` | provider 결과의 `maxOutputChars` 기본값입니다. 기본값은 `12000`이고, `0`이면 자르지 않습니다. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | in-memory job heartbeat timestamp와 MCP progress notification을 갱신하는 주기입니다. 기본값은 `300000` ms이며 provider health probe는 아닙니다. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | 완료된 in-memory job을 보관하는 시간입니다. 기본값은 1시간입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Gemini CLI command override입니다. |
 | `CODEX_AI_BRIDGE_GEMINI_MODEL` | tool call에서 `model`을 주지 않았을 때 `--model`로 전달할 기본 Gemini 모델입니다. Gemini에는 bridge 차원의 `effort`가 없으므로 모델 성능/특성으로 조절합니다. |
 | `CODEX_AI_BRIDGE_GEMINI_SANDBOX` | `1`이면 Gemini sandbox 옵션을 전달합니다. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_COMMAND` | Antigravity CLI command override입니다. `AGY_COMMAND`, `ANTIGRAVITY_COMMAND`도 사용할 수 있습니다. |
-| `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` | tool call에서 `model`을 주지 않았을 때 `--model`로 전달할 기본 Antigravity 모델입니다. 추론 강도가 `(Medium)`, `(high)` 같은 라벨에 포함된 경우 정확한 모델 라벨을 사용합니다. |
+| `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` | tool call에서 `model`을 주지 않았을 때 `--model`로 전달할 기본 Antigravity stable slug입니다. `agy models`의 정확한 값을 사용합니다. |
+| `CODEX_AI_BRIDGE_ANTIGRAVITY_EFFORT` | Antigravity 기본 effort입니다. 값은 `low`, `medium`, `high`입니다. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_PRINT_TIMEOUT` | `agy --print-timeout` 값을 override합니다. 예: `15m`, `900s`. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_SANDBOX` | Antigravity 비-agentic 호출에서는 기본 활성화입니다. `0`이면 비활성화, `1`이면 강제 활성화합니다. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_DANGEROUS_SKIP_PERMISSIONS` | 명시적으로 허용한 `agentic` 호출에서만 `--dangerously-skip-permissions`를 전달하려면 `1`로 설정합니다. |
@@ -258,9 +272,9 @@ Provider lock은 같은 workspace의 여러 Codex 세션이 같은 외부 provid
 작업을 기다리느라 MCP tool budget을 소모하지 않습니다. Windows에서는 경로 대소문자를
 포함해 workspace 경로를 canonicalize하므로 같은 workspace가 서로 다른 lock key를
 갖지 않습니다. 활성 lock은 heartbeat로 갱신하고,
-죽은 owner process의 lock은 정리하며, Windows에서 timeout된 provider 호출은
-process tree를 종료해 bridge lock 해제 뒤 Claude/Gemini/Antigravity 자식 process가
-남지 않게 합니다.
+죽은 owner process의 lock은 정리하며, timeout된 provider 호출은 process tree를
+종료합니다. MCP 서버도 SIGINT/SIGTERM 종료 전에 실행 중인 provider child를
+정리합니다.
 
 오래 걸리는 provider 호출은 provider를 죽이는 timeout이 아니라 foreground sync
 budget으로 제어합니다. `timeoutMs`는 일반 응답 대기 시간이 아니라 provider를
@@ -286,7 +300,8 @@ provider PID 및 실행 시간을 반환합니다. job registry는 현재 MCP pr
 즉시 `jobId`를 반환합니다.
 
 provider command가 실패하면 실패 출력에 provider를 실행한 작업 디렉터리와 실제
-`argv`가 포함됩니다. 따라서 `--max-turns` 같은 설정이 어떤 값으로 실행됐는지
+`argv`가 포함되며 일반적인 credential flag 값은 redact됩니다. 따라서
+`--max-turns` 같은 설정이 어떤 값으로 실행됐는지
 오류 보고서에서 바로 확인할 수 있습니다. 또한 현재 Gemini CLI처럼 대응되는 argv
 flag가 없는 provider도 실패 로그의 실제 argv로 확인할 수 있습니다.
 
@@ -333,4 +348,4 @@ ai_bridge_health
 
 ## 라이선스
 
-MIT. 저장소 루트의 `LICENSE`를 참고하세요.
+MIT. [LICENSE](LICENSE)를 참고하세요.

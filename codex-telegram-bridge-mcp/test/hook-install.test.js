@@ -48,6 +48,11 @@ assert.equal(
   "[features]\nhooks = true"
 );
 
+assert.equal(
+  ensureCodexHooksFeature("features.hooks = false\nmodel = \"gpt-5\"\n"),
+  "features.hooks = true\nmodel = \"gpt-5\""
+);
+
 const first = ensurePermissionHookInstalled();
 assert.equal(first.installed, true);
 assert.equal(first.changed, true);
@@ -108,7 +113,7 @@ const statefulBlock = [
   "",
   "[hooks.state]",
   "",
-  "[hooks.state.'C:\\Users\\me\\.codex\\config.toml:permission_request:0:0']",
+  "[hooks.state.'R:\\workspace\\.codex\\config.toml:permission_request:0:0']",
   'trusted_hash = "sha256:abc"',
   "# END codex-telegram-bridge-mcp permission hook"
 ].join("\n");

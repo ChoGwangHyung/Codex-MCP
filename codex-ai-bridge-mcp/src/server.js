@@ -2,28 +2,34 @@
 
 const readline = require("node:readline");
 const {
+  ANTIGRAVITY_EFFORTS,
+  DEFAULT_MAX_RESULT_CHARS,
   DEFAULT_SYNC_BUDGET_MS,
   DEFAULT_ROLE,
   DEFAULT_TIMEOUT_MS,
-  EFFORTS,
+  CLAUDE_EFFORTS,
   MAX_PROVIDER_MAX_TURNS,
   MAX_HEALTH_TIMEOUT_MS,
+  MAX_RESULT_CHARS_LIMIT,
   MAX_SYNC_BUDGET_MS,
   MAX_TIMEOUT_MS,
   MIN_HEALTH_TIMEOUT_MS,
   MIN_TASK_TIMEOUT_MS,
   POLICIES,
+  PRESETS,
+  PROTOCOL_VERSION,
   ROLES,
   SERVER_NAME,
   SERVER_VERSION
 } = require("./constants.js");
-const { askProvider, healthCheck, jobStatus } = require("./providers.js");
+const { askProviderOutcome, healthCheck, jobStatusOutcome } = require("./providers.js");
+const { terminateAllChildren } = require("./runner.js");
 const { sanitize } = require("./util.js");
 
 const tools = [
   tool("claude_task", "Ask Claude Code for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeEffort: true, includeMaxTurns: true })),
   tool("gemini_task", "Ask Gemini CLI for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeMaxTurns: true })),
-  tool("antigravity_task", "Ask Antigravity CLI for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeMaxTurns: true })),
+  tool("antigravity_task", "Ask Antigravity CLI for advisory, planning, review, QA, or optionally agentic work.", taskSchema({ includeAntigravityEffort: true, includeMaxTurns: true })),
   tool("cross_review", "Ask Claude, Gemini, or Antigravity in parallel and return the selected responses.", {
     ...taskSchema({ includeMaxTurns: true }).properties,
     providers: {
@@ -32,7 +38,9 @@ const tools = [
       minItems: 1,
       uniqueItems: true,
       default: ["claude", "gemini"]
-    }
+    },
+    claudeEffort: { type: "string", enum: [...CLAUDE_EFFORTS], description: "Claude-only effort override." },
+    antigravityEffort: { type: "string", enum: [...ANTIGRAVITY_EFFORTS], description: "Antigravity-only effort override." }
   }),
   tool("ai_bridge_job", "Poll a background AI bridge job returned by claude_task, gemini_task, antigravity_task, or cross_review.", {
     jobId: { type: "string", minLength: 1 }
@@ -48,54 +56,57 @@ function taskSchema(options = {}) {
     context: { type: "string" },
     preset: {
       type: "string",
-      enum: ["review"],
-      description: "review applies the latest Claude Fable alias with max effort and a 15 minute hard timeout unless overridden."
+      enum: [...PRESETS],
+      description: "quick: 2min timeout, 1min budget, low effort. review: 15min timeout, 2min budget, high effort."
     },
     role: { type: "string", enum: [...ROLES], default: DEFAULT_ROLE },
     policy: {
       type: "string",
       enum: [...POLICIES],
       default: "advisory",
-      description: "advisory is default. agentic requires CODEX_AI_BRIDGE_ALLOW_AGENTIC=1."
+      description: "agentic requires CODEX_AI_BRIDGE_ALLOW_AGENTIC=1."
     },
-    cwd: { type: "string", description: "Working directory under CODEX_AI_BRIDGE_ROOT." },
-    model: {
-      type: "string",
-      description: "Provider model override. Claude uses model plus Claude-only effort. Gemini uses model only. Antigravity uses exact agy model labels, such as Gemini 3.5 Flash (High), Gemini 3.5 Flash (Medium), Gemini 3.5 Flash (Low), Gemini 3.1 Pro (High), Gemini 3.1 Pro (Low), or Claude Opus 4.6 (Thinking), because it has no separate effort/reasoning flag."
-    },
+    cwd: { type: "string", description: "Directory under CODEX_AI_BRIDGE_ROOT." },
+    model: { type: "string", description: "Provider model override." },
     timeoutMs: {
       type: "integer",
       minimum: MIN_TASK_TIMEOUT_MS,
       maximum: MAX_TIMEOUT_MS,
       default: DEFAULT_TIMEOUT_MS,
-      description: "Hard provider timeout. Set to 0 to leave long-running jobs alive until the provider exits."
+      description: "Hard provider timeout; 0 disables it."
     },
     background: {
       type: "boolean",
       default: false,
-      description: "Return a job id immediately while the provider continues running in the background."
+      description: "Return a job id immediately and keep running."
     },
     syncBudgetMs: {
       type: "integer",
       minimum: 0,
       maximum: MAX_SYNC_BUDGET_MS,
       default: DEFAULT_SYNC_BUDGET_MS,
-      description: "Maximum foreground wait before returning a background job id."
+      description: "Foreground wait before returning a job id."
+    },
+    maxOutputChars: {
+      type: "integer",
+      minimum: 0,
+      maximum: MAX_RESULT_CHARS_LIMIT,
+      default: DEFAULT_MAX_RESULT_CHARS,
+      description: "Result character budget; over-budget output keeps head and tail. 0 disables trimming."
     }
   };
   if (options.includeEffort) {
-    properties.effort = {
-      type: "string",
-      enum: [...EFFORTS],
-      description: "Claude-only reasoning effort level: low, medium, high, xhigh, or max. Gemini and Antigravity do not accept effort."
-    };
+    properties.effort = { type: "string", enum: [...CLAUDE_EFFORTS] };
+  }
+  if (options.includeAntigravityEffort) {
+    properties.effort = { type: "string", enum: [...ANTIGRAVITY_EFFORTS] };
   }
   if (options.includeMaxTurns) {
     properties.maxTurns = {
       type: "integer",
       minimum: 1,
       maximum: MAX_PROVIDER_MAX_TURNS,
-      description: "Provider turn limit for this call where supported. Claude uses --max-turns; current Gemini and Antigravity CLIs do not expose an equivalent flag."
+      description: "Claude only; Gemini and Antigravity CLIs expose no equivalent."
     };
   }
   return {
@@ -130,9 +141,9 @@ function textResult(text, isError = false) {
 }
 
 async function callTool(name, args, context = {}) {
-  if (name === "claude_task") return textResult(await askProvider("claude", args, context));
-  if (name === "gemini_task") return textResult(await askProvider("gemini", args, context));
-  if (name === "antigravity_task") return textResult(await askProvider("antigravity", args, context));
+  if (name === "claude_task") return outcomeResult(await askProviderOutcome("claude", args, context));
+  if (name === "gemini_task") return outcomeResult(await askProviderOutcome("gemini", args, context));
+  if (name === "antigravity_task") return outcomeResult(await askProviderOutcome("antigravity", args, context));
   if (name === "cross_review") {
     if (args && Object.prototype.hasOwnProperty.call(args, "effort")) {
       throw new Error("cross_review does not support effort. Use claude_task for Claude effort control.");
@@ -140,18 +151,33 @@ async function callTool(name, args, context = {}) {
     const providers = Array.isArray(args && args.providers) && args.providers.length ? args.providers : ["claude", "gemini"];
     const unique = [...new Set(providers)].filter((provider) => provider === "claude" || provider === "gemini" || provider === "antigravity");
     if (unique.length === 0) throw new Error("providers must include claude, gemini, or antigravity");
-    const results = await Promise.all(unique.map((provider) => askProvider(provider, args, context)));
-    return textResult(results.join("\n\n---\n\n"));
+    const results = await Promise.all(unique.map((provider) => {
+      const providerArgs = { ...args };
+      delete providerArgs.providers;
+      delete providerArgs.claudeEffort;
+      delete providerArgs.antigravityEffort;
+      if (provider === "claude" && args.claudeEffort) providerArgs.effort = args.claudeEffort;
+      if (provider === "antigravity" && args.antigravityEffort) providerArgs.effort = args.antigravityEffort;
+      return askProviderOutcome(provider, providerArgs, context);
+    }));
+    return textResult(
+      results.map((result) => result.text).join("\n\n---\n\n"),
+      results.some((result) => result.isError)
+    );
   }
-  if (name === "ai_bridge_job") return textResult(jobStatus(args || {}));
+  if (name === "ai_bridge_job") return outcomeResult(jobStatusOutcome(args || {}));
   if (name === "ai_bridge_health") return textResult(await healthCheck(args || {}));
   throw Object.assign(new Error(`unknown tool: ${name}`), { code: -32601 });
+}
+
+function outcomeResult(outcome) {
+  return textResult(outcome.text, Boolean(outcome.isError));
 }
 
 async function handleMessage(message) {
   if (message.method === "initialize") {
     return {
-      protocolVersion: (message.params && message.params.protocolVersion) || "2024-11-05",
+      protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: {} },
       serverInfo: { name: SERVER_NAME, version: SERVER_VERSION }
     };
@@ -161,15 +187,34 @@ async function handleMessage(message) {
   if (message.method === "tools/call") {
     const params = message.params || {};
     const meta = params._meta || {};
-    return callTool(params.name, params.arguments || {}, {
-      progressToken: meta.progressToken,
-      notify
-    });
+    try {
+      return await callTool(params.name, params.arguments || {}, {
+        progressToken: meta.progressToken,
+        notify
+      });
+    } catch (error) {
+      if (error && error.code === -32601) throw error;
+      return textResult(sanitize(error && error.message || "Tool error"), true);
+    }
   }
   throw Object.assign(new Error(`method not found: ${message.method}`), { code: -32601 });
 }
 
+// stdout carries the JSON-RPC framing, so diagnostics go to stderr only.
+// A stdio MCP server that exits on a stray async failure leaves the client with
+// a dead pipe and no error response, which is strictly worse than staying up
+// with the fault recorded.
+function installProcessGuards() {
+  process.on("unhandledRejection", (reason) => {
+    process.stderr.write(`${SERVER_NAME}: unhandled rejection: ${sanitize(reason && reason.stack || String(reason))}\n`);
+  });
+  process.on("uncaughtException", (error) => {
+    process.stderr.write(`${SERVER_NAME}: uncaught exception: ${sanitize(error && error.stack || String(error))}\n`);
+  });
+}
+
 function main() {
+  installProcessGuards();
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on("line", async (line) => {
     const trimmed = line.trim();
@@ -189,8 +234,16 @@ function main() {
     }
   });
 
-  process.on("SIGINT", () => process.exit(0));
-  process.on("SIGTERM", () => process.exit(0));
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    rl.close();
+    await terminateAllChildren();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
 }
 
 module.exports = {

@@ -58,6 +58,29 @@ try {
     assert.equal(config.telegramEnabled(), true);
   }
 
+  fs.writeFileSync(accessFile, JSON.stringify({
+    dmPolicy: "disabled",
+    allowFrom: ["12345"],
+    approvalByChat: { "12345": ["12345"] },
+    groups: {},
+    pending: {}
+  }));
+  for (const key of envKeys) delete process.env[key];
+  {
+    const config = resetConfigModule();
+    assert.equal(config.bridgeEnabled(), true);
+    assert.equal(config.telegramPolicy(), "disabled");
+    assert.equal(config.telegramEnabled(), false);
+    assert.equal(config.allowedChatIds().size, 0);
+  }
+
+  fs.writeFileSync(accessFile, JSON.stringify({
+    dmPolicy: "allowlist",
+    allowFrom: ["12345"],
+    approvalByChat: { "12345": ["12345"] },
+    groups: {},
+    pending: {}
+  }));
   for (const key of envKeys) delete process.env[key];
   process.chdir(projectDir);
   process.env.CODEX_TELEGRAM_BRIDGE_RUNTIME_DIR = path.join(tempDir, "custom-runtime");

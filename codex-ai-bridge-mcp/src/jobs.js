@@ -60,10 +60,13 @@ async function waitForJob(job, waitMs, options = {}) {
   if (!job || job.status !== "running") return true;
   if (!Number.isInteger(waitMs) || waitMs < 0) return false;
   const deadline = waitMs === 0 ? Number.POSITIVE_INFINITY : Date.now() + waitMs;
+  const progressIntervalMs = Number(options.progressIntervalMs) > 0
+    ? Number(options.progressIntervalMs)
+    : Number.POSITIVE_INFINITY;
   while (job.status === "running") {
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) return false;
-    const sleepMs = Math.min(job.checkIntervalMs, remainingMs);
+    const sleepMs = Math.min(job.checkIntervalMs, remainingMs, progressIntervalMs);
     const completed = await Promise.race([
       job.promise.then(() => true),
       delay(sleepMs).then(() => false)
@@ -80,25 +83,22 @@ function getJob(jobId) {
   return jobs.get(String(jobId || ""));
 }
 
+// Both formatters are re-sent verbatim on every ai_bridge_job poll, so they
+// carry only what a caller acts on. Wall-clock timestamps that can be derived
+// from elapsed values are deliberately omitted.
 function formatJobPending(job, reason) {
-  const elapsedMs = jobElapsedMs(job);
   return [
     ...formatWarnings(job),
     `${job.provider} job is running.`,
     `jobId: ${job.jobId}`,
     "status: running",
     reason ? `note: ${reason}` : null,
-    `startedAt: ${job.startedAt}`,
-    `elapsedMs: ${elapsedMs}`,
+    `elapsedMs: ${jobElapsedMs(job)}`,
     `providerStatus: ${job.providerStartedAt ? "running" : "waiting_for_lock"}`,
-    job.providerStartedAt ? `providerStartedAt: ${job.providerStartedAt}` : null,
-    job.providerStartedAt ? `queueElapsedMs: ${Date.parse(job.providerStartedAt) - Date.parse(job.startedAt)}` : null,
-    `lastCheckedAt: ${job.lastCheckedAt}`,
     `heartbeatIntervalMs: ${job.checkIntervalMs}`,
     job.timeoutMs > 0 ? `hardTimeoutMs: ${job.timeoutMs}` : "hardTimeoutMs: disabled",
     job.timeoutMs > 0 ? `hardTimeoutRemainingMs: ${hardTimeoutRemainingMs(job)}` : null,
     job.timeoutMs > 0 && !job.providerStartedAt ? "hardTimeoutNote: countdown starts when the provider process launches" : null,
-    job.pid ? `pid: ${job.pid}` : null,
     "Poll with ai_bridge_job using this jobId."
   ].filter(Boolean).join("\n");
 }
@@ -109,18 +109,12 @@ function formatJobStatus(jobId) {
   if (job.status === "running") return formatJobPending(job);
   return [
     ...formatWarnings(job),
-    `${job.provider} job finished.`,
-    `jobId: ${job.jobId}`,
-    `status: ${job.status}`,
-    `startedAt: ${job.startedAt}`,
-    job.providerStartedAt ? `providerStartedAt: ${job.providerStartedAt}` : null,
-    job.completedAt ? `completedAt: ${job.completedAt}` : null,
-    `elapsedMs: ${jobElapsedMs(job)}`,
-    Number.isInteger(job.providerElapsedMs) ? `providerElapsedMs: ${job.providerElapsedMs}` : null,
-    job.pid ? `pid: ${job.pid}` : null,
-    job.failureKind ? `failureKind: ${job.failureKind}` : null,
-    job.result || (job.status === "completed" ? `${job.provider} result:\n(no output)` : `${job.provider} failed`)
-  ].filter(Boolean).join("\n");
+    job.result || (job.status === "completed" ? `${job.provider} result:\n(no output)` : `${job.provider} failed`),
+    "",
+    `jobId: ${job.jobId} status: ${job.status} elapsedMs: ${jobElapsedMs(job)}${
+      Number.isInteger(job.providerElapsedMs) ? ` providerElapsedMs: ${job.providerElapsedMs}` : ""
+    }${job.failureKind ? ` failureKind: ${job.failureKind}` : ""}`
+  ].filter((line) => line !== null).join("\n");
 }
 
 function formatWarnings(job) {

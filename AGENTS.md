@@ -9,8 +9,17 @@
 ## Ownership
 
 - The main agent owns all edits, version changes, commits, pushes, and publishes.
-- Use read-only subagents only for bounded exploration, review, or verification when parallel work is useful.
-- Do not let subagents run this repository's AI or Telegram bridge MCPs. Do not delegate publishing.
+- This repository defines no custom subagent roles. Work it directly rather than
+  adding roles that would only re-read what the main agent can already read.
+- Never run this repository's own AI or Telegram bridge MCPs against itself from
+  an automated role, and never delegate publishing.
+
+## Reporting
+
+- Report to the user in Korean unless asked otherwise. Code, comments, commit
+  messages, and status tokens stay English.
+- Scope tool output: read targeted line ranges, cap searches, and summarize
+  evidence instead of pasting raw dumps.
 
 ## Engineering
 

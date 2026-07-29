@@ -1,7 +1,8 @@
 "use strict";
 
 const SERVER_NAME = "codex-telegram-bridge-mcp";
-const SERVER_VERSION = "1.0.6";
+const SERVER_VERSION = "1.0.7";
+const PROTOCOL_VERSION = "2024-11-05";
 const DEFAULT_TELEGRAM_TIMEOUT_MS = 120000;
 const PROJECT_ENV_FILE = "config.toml.env";
 const PROJECT_ACCESS_FILE = "config.toml.access.json";
@@ -21,6 +22,7 @@ const DENY_TOKENS = new Set(["deny", "denied", "reject", "no", "n", "cancel", "ê
 module.exports = {
   SERVER_NAME,
   SERVER_VERSION,
+  PROTOCOL_VERSION,
   DEFAULT_TELEGRAM_TIMEOUT_MS,
   PROJECT_ENV_FILE,
   PROJECT_ACCESS_FILE,

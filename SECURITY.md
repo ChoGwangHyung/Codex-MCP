@@ -17,8 +17,11 @@ Keep Telegram settings in a project-local ignored file such as
 Before publishing, scan for token-like values:
 
 ```powershell
-rg -uuu -n "\d{6,}:[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}|github_pat_|gh[pousr]_" .
+rg -uuu -n "\d{6,}:[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{20,}|github_pat_|gh[pousr]_|npm_|_authToken" .
 ```
+
+`npm run release:check` scans current files and staged index blobs. This also
+catches a secret that was staged and then removed only from the working tree.
 
 ## Telegram Relay
 
@@ -31,10 +34,11 @@ TUI and should only be enabled on trusted machines.
 When the Telegram bridge is configured, it installs a user-level Codex
 `PermissionRequest` hook in `hooks.json` by default. The hook sends approval requests to
 Telegram only while Codex is handling a turn that originated from the Telegram
-relay. Any allowlisted approval chat can approve, always approve, or deny those
-Telegram-origin native Codex permission requests. Always approvals are stored by
-the bridge for the same session, cwd, tool name, and exact tool input signature;
-they do not change Codex's global permission configuration. Use a dedicated
+relay. Native permission decisions are button-only. Private-chat decisions must
+come from that chat's owner; group decisions must come from a user recorded for
+that chat during pairing. Always approvals are stored by the bridge for the same
+session, cwd, tool name, and exact tool input signature; they do not change
+Codex's global permission configuration. Use a dedicated
 `CODEX_TELEGRAM_APPROVAL_CHAT_IDS` value for trusted operators, keep timeout
 behavior at the default `ask` unless you intentionally want fail-closed `deny`,
 and do not allowlist chats you do not control. Set
@@ -58,7 +62,15 @@ and `/use <id>` to control routing, or separate bot tokens for strict isolation.
 
 `codex-ai-bridge-mcp` defaults to advisory/read-only behavior. Agentic provider
 execution must be explicitly enabled with environment variables and should only
-be used inside trusted workspaces.
+be used inside trusted workspaces. Working directories are checked after
+resolving links, and common credential argv values are redacted from provider
+failure reports.
+
+## Desktop Notifications
+
+`codex-done-notifier` shows only a project completion message by default.
+Assistant response previews are opt-in because desktop notifications may appear
+on a lock screen.
 
 ## Validation
 

@@ -24,6 +24,11 @@ assert.equal(
   "[features]\nhooks = true"
 );
 
+assert.equal(
+  _test.ensureCodexHooksFeature("features.hooks = false\nmodel = \"gpt-5\"\n"),
+  "features.hooks = true\nmodel = \"gpt-5\""
+);
+
 const first = _test.ensureHookInstalled();
 assert.equal(first.changed, true);
 const installed = fs.readFileSync(configFile, "utf8");
@@ -73,7 +78,7 @@ const stateful = [
   "",
   "[hooks.state]",
   "",
-  "[hooks.state.'C:\\Users\\me\\.codex\\config.toml:stop:0:0']",
+  "[hooks.state.'R:\\workspace\\.codex\\config.toml:stop:0:0']",
   'trusted_hash = "sha256:abc"',
   "# END codex-done-notifier hook"
 ].join("\n");
@@ -122,8 +127,16 @@ assert.equal(
 assert.equal(_test.notificationSound({ sound: "hand" }), "hand");
 assert.equal(_test.notificationSound({ soundEnabled: false, sound: "hand" }), "none");
 assert.equal(
-  _test.notificationSoundFile({ soundFile: ".codex/done.wav" }),
-  path.resolve(".codex", "done.wav")
+  _test.notificationSoundFile({ soundFile: ".codex/done.wav" }, project),
+  path.join(project, ".codex", "done.wav")
+);
+assert.equal(
+  _test.portableSoundFile(".codex/done.wav", { cwd: project, global: false }),
+  path.normalize(".codex/done.wav")
+);
+assert.equal(
+  _test.portableSoundFile(".codex/done.wav", { cwd: project, global: true }),
+  path.join(project, ".codex", "done.wav")
 );
 assert.equal(
   _test.notificationSoundFile({ soundFile: path.join(project, "done.wav") }),
@@ -145,15 +158,26 @@ assert.equal(
     last_assistant_message: "Done.\nExtra",
     cwd: project
   }, project),
+  "project is done."
+);
+assert.equal(
+  _test.notificationBody({
+    last_assistant_message: "Done.\nExtra",
+    cwd: project
+  }, project, true),
   "project: Done."
 );
 
-_test.handleHookInput({
-  cwd: project,
-  session_id: "session-1",
-  last_assistant_message: "Finished"
-}, _test.hookConfigFromArgs(["--enabled", "--sound", "exclamation", "--session", "session-1"])).then((result) => {
+Promise.all([
+  _test.handleHookInput({
+    cwd: project,
+    session_id: "session-1",
+    last_assistant_message: "Finished"
+  }, _test.hookConfigFromArgs(["--enabled", "--sound", "exclamation", "--session", "session-1"])),
+  _test.spawnDetached(path.join(tempDir, "missing-notifier-command"), [])
+]).then(([result, missingCommandStarted]) => {
   assert.equal(result.notified, true);
+  assert.equal(missingCommandStarted, false);
 }).catch((error) => {
   console.error(error);
   process.exit(1);

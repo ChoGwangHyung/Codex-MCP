@@ -15,7 +15,7 @@ Codex Telegram Bridge MCP는 allowlist에 등록된 Telegram 채팅과 Codex 세
 | `telegram_send` | allowlist에 등록된 Telegram 채팅으로 메시지를 보냅니다. |
 | `telegram_send_file` | local path, URL, Telegram file ID에서 모든 형식의 파일을 보냅니다. |
 | `telegram_send_photo` | local path, URL, Telegram file ID에서 사진을 보냅니다. |
-| `telegram_send_document` | local path, URL, Telegram file ID에서 파일/document를 보냅니다. |
+| `telegram_send_document` | `telegram_send_file`의 alias이며 호환성을 위해 유지합니다. |
 | `telegram_wait_reply` | allowlist 채팅의 다음 응답 1개를 기다립니다. |
 | `telegram_ask` | 메시지를 보내고 응답 1개를 기다립니다. |
 | `telegram_inbox_read` | 수신 monitor가 캡처한 메시지를 읽거나 consume합니다. |
@@ -122,6 +122,9 @@ CODEX_TELEGRAM_CODEX_SUBMIT_DELAY_MS=150
 # CODEX_TELEGRAM_RELAY_PENDING_REPLY_TTL_MS=86400000
 # 선택 inbound media 용량 제한:
 # CODEX_TELEGRAM_DOWNLOAD_MAX_BYTES=20971520
+# 선택 Telegram API 및 inbound download deadline:
+# CODEX_TELEGRAM_API_TIMEOUT_MS=30000
+# CODEX_TELEGRAM_DOWNLOAD_TIMEOUT_MS=120000
 # telegram_ask가 더 이상 기다리지 않는 button 응답을 monitor가 넘겨받기까지의
 # 대기 시간. 기본값은 5초입니다. max age를 넘긴 오래된 질문이나 대기 중인
 # callback은 확인만 하고 session에는 전달하지 않습니다.
@@ -241,7 +244,9 @@ telegram_monitor_status
 형식과 상관없이 파일을 보내려면 `telegram_send_file`을 사용합니다. 이 도구는
 Telegram document 경로로 전송하므로 `.apk`, `.md`, `.txt`, `.png`, `.jpeg`,
 `.zip`, log 파일 등을 같은 방식으로 처리하고 원본 파일을 보존합니다.
-`telegram_send_document`는 같은 목적의 명시적 document 도구로 유지됩니다.
+`telegram_send_document`는 같은 Telegram endpoint를 같은 인자로 호출하며 반환하는
+`type` 문자열만 다릅니다. `telegram_send_file`을 사용하세요. document 도구는 기존
+호출자 호환을 위해 유지하며 다음 major version에서 제거합니다.
 
 `telegram_send_photo`는 Telegram 채팅에서 이미지를 사진처럼 표시하고 싶을 때만
 사용합니다. local upload 준비 로직은 파일 전송과 공유하지만 Telegram photo
@@ -475,9 +480,13 @@ fallback합니다.
   대한 bridge-side 승인을 저장합니다. Codex의 전역 permission 설정은 변경하지
   않습니다. 저장된 항상 승인을 쓰지 않으려면 Telegram runtime state 파일을
   삭제하거나 `CODEX_TELEGRAM_ALWAYS_APPROVAL_ENABLED=0`을 설정합니다.
-- 텍스트 fallback은 같은 allowlist chat에서 `approve`, `승인`, `deny`, `거부`
-  같은 응답을 계속 허용합니다. `always approve`, `항상 승인`도 같은 bridge-side
-  항상 승인 동작으로 처리합니다.
+- native permission 승인은 button-only입니다. 숨겨진 request code 없이 자유
+  형식 텍스트를 허용하면 동시 요청을 안전하게 구분할 수 없기 때문입니다.
+  일반 선택용 `telegram_ask`는 기존 text fallback을 유지합니다.
+- private chat에서는 해당 chat의 소유 사용자만 승인할 수 있습니다. group에서는
+  pairing 과정에서 기록된 사용자만 승인할 수 있습니다. group chat ID만 수동
+  allowlist해도 모든 group member에게 승인 권한이 생기지는 않습니다. chat별 승인자
+  기록 기능 도입 전에 설정한 기존 group은 upgrade 후 한 번 다시 pairing해야 합니다.
 - `CODEX_TELEGRAM_APPROVAL_CHAT_IDS`가 있으면 해당 allowlist chat으로만 요청을
   보냅니다. 없으면 모든 allowlist chat으로 보냅니다.
 - Telegram timeout 시 기본값은 `ask`이며, 일반 Codex approval prompt로
@@ -499,8 +508,9 @@ Codex native permission과 별개로 agent workflow 안에서 명시적인 승�
 telegram_approval_request
 ```
 
-helper는 Telegram inline 버튼으로 승인/항상 승인/거부 응답을 받습니다. 해당 도구를
-의도적으로 호출하는 workflow에서만 사용하세요.
+helper는 Telegram inline 버튼으로 승인/항상 승인/거부 응답을 받습니다. 응답 사용자를
+요청 확정 전에 검사하므로 권한 없는 group member가 버튼을 없애거나 승인을 먼저
+소비할 수 없습니다. 해당 도구를 의도적으로 호출하는 workflow에서만 사용하세요.
 
 ## 상태 파일
 
@@ -527,8 +537,15 @@ User-local fallback:
 Access JSON 저장 값:
 
 - `allowFrom`: allowlist에 등록된 Telegram chat ID.
+- `approvalByChat`: 특히 group 승인 권한 확인에 쓰는, pairing 과정에서 chat별로
+  기록된 Telegram user ID.
 - `pending`: 임시 pairing code.
 - `dmPolicy`: `allowlist` 또는 `disabled`.
+
+`dmPolicy`를 `disabled`로 설정하면 token과 allowlist를 남긴 상태에서도 runtime
+send, receive, relay, approval 동작을 모두 비활성화합니다.
+`codex-telegram-configure remove <chat-id>`는 allowlist entry와 해당 chat의 승인자
+기록을 함께 제거합니다.
 
 ## 여러 MCP 인스턴스
 
@@ -538,13 +555,19 @@ token 단위 cooperative broker를 사용합니다. 한 번에 한 process만 Te
 각자 callback을 읽습니다. 따라서 다른 MCP process가 callback을 먼저 가져가거나
 runtime state 파일을 손상시키는 문제를 피합니다.
 
+Codex가 thread 또는 session identifier를 제공하면 broker consumer identity에
+포함하고, 없으면 MCP process identity를 사용합니다. 따라서 같은 working
+directory에서 실행하는 여러 세션도 하나의 target으로 합쳐지지 않습니다.
+
 일반 Telegram 메시지는 chat별 활성 Codex 프로젝트 하나로만 route됩니다. bot에
 `/sessions`를 보내면 현재 live target을 확인하고, `/use <id>`로 대상을 선택할 수
 있습니다. 선택한 target이 사라지면 다음 eligible monitor가 활성화됩니다.
+process 단위 consumer는 local OS process 상태도 확인하므로 MCP가 재시작되었을 때
+일반 stale interval을 기다리지 않고 pending message를 새 process로 넘깁니다.
 `/sessions`와 `/use`는 broker control command라 Codex 세션에는 주입되지 않습니다.
-`telegram_ask`나 permission approval이 text fallback을 기다리는 동안에는 해당 chat을
-가장 최근에 시작한 요청 프로젝트로 임시 route합니다. 요청별 subscriber는 다른
-프로젝트로 route된 update를 무시하며, 완료되면 기존 활성 route를 다시 사용합니다.
+`telegram_ask`가 text fallback을 기다리는 동안에는 해당 chat을 요청 프로젝트로
+임시 route합니다. 요청별 subscriber는 다른 프로젝트로 route된 update를 무시하며,
+완료되면 기존 활성 route를 다시 사용합니다.
 chat 간 routing state까지 완전히 분리해야 하면 별도 bot token을 쓰는 것이 가장 강한
 격리 방식입니다.
 
@@ -584,8 +607,10 @@ telegram_send_photo
 telegram_send_document
 telegram_wait_reply
 telegram_ask
+telegram_inbox_read
+telegram_approval_request
 ```
 
 ## 라이선스
 
-MIT. 저장소 루트의 `LICENSE`를 참고하세요.
+MIT. [LICENSE](LICENSE)를 참고하세요.

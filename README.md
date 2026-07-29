@@ -1,8 +1,8 @@
 # Codex MCP
 
-Codex MCP is a small workspace of MCP servers for Codex operator workflows.
-Each server is kept as an independent package so projects can enable only the
-tools they need.
+Codex MCP is a small workspace of MCP servers and hooks for Codex operator
+workflows. Each package stays independent so projects can enable only the tools
+or notifications they need.
 
 Korean documentation: [README.ko.md](README.ko.md)
 
@@ -49,8 +49,9 @@ npm run release:check
 
 `check` runs package tests. `release:check` also validates npm tarball contents,
 JSON-RPC initialization and `tools/list`, diff whitespace, and accidental
-secrets or machine-specific content. CI runs the release check on Windows and
-Linux with Node.js 20 and 22.
+secrets or machine-specific content in both current files and staged index
+blobs. CI runs the release check on Windows,
+Linux, and macOS with Node.js 20 and 22.
 
 ## Security
 

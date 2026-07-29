@@ -2,6 +2,8 @@
 
 const assert = require("node:assert/strict");
 const { _test } = require("../src/index.js");
+const { APP_SERVER_ENDPOINT_CACHE_MS } = require("../src/constants.js");
+const { _test: relayTest } = require("../src/relay.js");
 
 const message = {
   chatId: "12345",
@@ -97,3 +99,20 @@ assert.equal(_test.isApprovalDecisionRelayMessage({
     one: { code: "abc123" }
   }
 }), false);
+
+{
+  const now = Date.now();
+  const cache = {
+    endpoint: "pipe:test",
+    cwd: "<project-dir>",
+    threadId: "thread-1",
+    resolvedAt: now
+  };
+  assert.equal(relayTest.relayThreadCacheUsable(cache, "pipe:test", "<project-dir>", now), true);
+  assert.equal(
+    relayTest.relayThreadCacheUsable(cache, "pipe:test", "<project-dir>", now + APP_SERVER_ENDPOINT_CACHE_MS + 1),
+    false,
+    "thread discovery is refreshed so a newer session can take over"
+  );
+  assert.equal(relayTest.relayThreadCacheUsable(cache, "pipe:other", "<project-dir>", now), false);
+}

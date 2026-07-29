@@ -1,7 +1,8 @@
 "use strict";
 
 const SERVER_NAME = "codex-ai-bridge-mcp";
-const SERVER_VERSION = "1.1.2";
+const SERVER_VERSION = "1.1.3";
+const PROTOCOL_VERSION = "2024-11-05";
 const MIN_TASK_TIMEOUT_MS = 0;
 const MIN_HEALTH_TIMEOUT_MS = 1000;
 const MAX_HEALTH_TIMEOUT_MS = 60000;
@@ -11,17 +12,36 @@ const MAX_PROVIDER_MAX_TURNS = 100;
 const REVIEW_TIMEOUT_MS = 900000;
 const REVIEW_SYNC_BUDGET_MS = 120000;
 const REVIEW_MAX_TURNS = 4;
+const QUICK_TIMEOUT_MS = 120000;
+const QUICK_SYNC_BUDGET_MS = 60000;
+const QUICK_MAX_TURNS = 2;
 const DEFAULT_TIMEOUT_MS = parseDefaultTimeout(process.env.CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS, REVIEW_TIMEOUT_MS);
 const DEFAULT_SYNC_BUDGET_MS = parseSyncBudget(process.env.CODEX_AI_BRIDGE_SYNC_BUDGET_MS, REVIEW_SYNC_BUDGET_MS);
 const DEFAULT_JOB_CHECK_MS = parseJobCheckInterval(process.env.CODEX_AI_BRIDGE_JOB_CHECK_MS, 5 * 60 * 1000);
+const PROGRESS_INTERVAL_MS = 15000;
 const MAX_OUTPUT_BYTES = 240000;
+const MAX_RESULT_CHARS_LIMIT = 200000;
+// Transport cap. The provider may emit far more than a caller wants replayed on
+// every later turn, so results are trimmed to this many characters unless the
+// call overrides it. Failure tails are trimmed harder: they exist to diagnose,
+// not to reproduce the run.
+const DEFAULT_MAX_RESULT_CHARS = parseCharBudget(process.env.CODEX_AI_BRIDGE_MAX_RESULT_CHARS, 12000);
+const FAILURE_TAIL_CHARS = 1200;
 const PROMPT_ARG = "Use stdin as the complete task context. Follow the requested permission policy.";
 const DEFAULT_ROLE = "reviewer";
 const ROLES = new Set(["planner", "reviewer", "security", "qa", "architecture", "refactor", "implementer"]);
 const POLICIES = new Set(["advisory", "workspace-read", "agentic"]);
-const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
-const PRESETS = new Set(["review"]);
+const CLAUDE_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const ANTIGRAVITY_EFFORTS = new Set(["low", "medium", "high"]);
+const PRESETS = new Set(["review", "quick"]);
 const MODEL_RE = /^[A-Za-z0-9._:/() -]{1,120}$/;
+
+function parseCharBudget(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > MAX_RESULT_CHARS_LIMIT) return fallback;
+  return parsed;
+}
 
 function parseDefaultTimeout(value, fallback) {
   if (value === undefined || value === null || value === "") return fallback;
@@ -47,6 +67,7 @@ function parseJobCheckInterval(value, fallback) {
 module.exports = {
   SERVER_NAME,
   SERVER_VERSION,
+  PROTOCOL_VERSION,
   MIN_TASK_TIMEOUT_MS,
   MIN_HEALTH_TIMEOUT_MS,
   MAX_HEALTH_TIMEOUT_MS,
@@ -56,15 +77,23 @@ module.exports = {
   REVIEW_TIMEOUT_MS,
   REVIEW_SYNC_BUDGET_MS,
   REVIEW_MAX_TURNS,
+  QUICK_TIMEOUT_MS,
+  QUICK_SYNC_BUDGET_MS,
+  QUICK_MAX_TURNS,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_SYNC_BUDGET_MS,
   DEFAULT_JOB_CHECK_MS,
+  PROGRESS_INTERVAL_MS,
   MAX_OUTPUT_BYTES,
+  DEFAULT_MAX_RESULT_CHARS,
+  MAX_RESULT_CHARS_LIMIT,
+  FAILURE_TAIL_CHARS,
   PROMPT_ARG,
   DEFAULT_ROLE,
   ROLES,
   POLICIES,
-  EFFORTS,
+  CLAUDE_EFFORTS,
+  ANTIGRAVITY_EFFORTS,
   PRESETS,
   MODEL_RE
 };

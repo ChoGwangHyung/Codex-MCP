@@ -61,10 +61,10 @@ CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS = "4"
 # CODEX_AI_BRIDGE_CLAUDE_EFFORT = "max"
 # Gemini: no bridge `effort`; choose the Gemini CLI model only when needed.
 # CODEX_AI_BRIDGE_GEMINI_MODEL = "<gemini-model>"
-# Antigravity: no separate `effort`; reasoning strength is part of the model label.
-# Examples: "Gemini 3.5 Flash (High)", "Gemini 3.5 Flash (Medium)",
-# "Gemini 3.5 Flash (Low)", "Gemini 3.1 Pro (High)", "Gemini 3.1 Pro (Low)"
+# Antigravity: `model` selects a stable slug and `effort` is low/medium/high.
+# Run `agy models` for the slugs available to the current account.
 # CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL = "<antigravity-model>"
+# CODEX_AI_BRIDGE_ANTIGRAVITY_EFFORT = "high"
 # For long reviews in clients with strict MCP tool deadlines:
 # CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS = "0"
 # CODEX_AI_BRIDGE_SYNC_BUDGET_MS = "120000"
@@ -74,7 +74,8 @@ Use forward slashes or escaped backslashes on Windows.
 
 Task `cwd` values are optional. If supplied, they must resolve to an existing
 directory under `CODEX_AI_BRIDGE_ROOT`. Omit `cwd` to run the provider from the
-project root.
+project root. The bridge resolves symlinks and junctions before enforcing this
+boundary.
 
 If installed globally from npm, the MCP command can be the package binary:
 
@@ -124,13 +125,16 @@ Effort values:
 low, medium, high, xhigh, max
 ```
 
+`cross_review` keeps provider controls unambiguous with `claudeEffort` and
+`antigravityEffort`. The latter accepts only `low`, `medium`, or `high`.
+
 Provider reasoning controls:
 
 | Provider | MCP fields | Reasoning/intensity control | Notes |
 | --- | --- | --- | --- |
 | Claude Code | `model`, `effort`, `maxTurns` | `effort` controls reasoning depth. `maxTurns` controls Claude CLI continuation turns for one bridge call. | Use `effort: "max"` and `maxTurns: 4` for broad review gates. Use `maxTurns: 1` only for strict single-turn probes. |
 | Gemini CLI | `model` | No bridge-level `effort`. Pick the Gemini model exposed by your Gemini CLI/account. | `maxTurns` is accepted for cross-provider schema compatibility but does not emit a Gemini argv flag. |
-| Antigravity CLI | `model` | No separate `effort` or reasoning flag. Use the exact model label when Antigravity exposes variants such as `(Low)`, `(Medium)`, `(High)`, or `(Thinking)`. | `maxTurns` is accepted for cross-provider schema compatibility but does not emit an Antigravity argv flag. |
+| Antigravity CLI | `model`, `effort` | `model` accepts a stable slug from `agy models`; `effort` accepts `low`, `medium`, or `high`. | `maxTurns` is accepted for cross-provider schema compatibility but does not emit an Antigravity argv flag. |
 
 Precedence:
 
@@ -139,6 +143,8 @@ Precedence:
 - Gemini model: task `model` > `CODEX_AI_BRIDGE_GEMINI_MODEL` > Gemini CLI default.
 - Antigravity model: task `model` > `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` > Antigravity CLI default.
 - Claude effort: task `effort` > `CODEX_AI_BRIDGE_CLAUDE_EFFORT` > unset.
+- Antigravity effort: task `effort` > `CODEX_AI_BRIDGE_ANTIGRAVITY_EFFORT` >
+  review preset default (`high`) > unset.
 - Provider max turns: task `maxTurns` > review preset default (`4`) >
   `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` > policy default (`8` for agentic, `3`
   otherwise).
@@ -152,41 +158,48 @@ gate usually means one bridge tool call, not necessarily `--max-turns 1`; wide
 Fable/max reviews often need about `4`. Use `1` only for strict single-turn
 probes.
 
-Gemini and Antigravity tasks do not accept `effort`. Antigravity CLI 1.1.0
-exposes `--model` but no documented `--effort` or reasoning-effort flag. When
-Antigravity exposes reasoning variants through model labels, pass the exact
-label through `model`, for example `Gemini 3.5 Flash (Medium)` or
-`Gemini 3.1 Pro (High)`.
-
-Known Antigravity model labels can change by account, plan, region, and CLI
-version. The authoritative local command is `agy models`; use exactly the text
-that command prints. Public Antigravity documentation and current CLI tutorials
-have shown these labels:
+Gemini tasks do not accept `effort`. Current Antigravity CLI releases expose
+`--effort low|medium|high` independently of `--model`. Model availability can
+still vary by account, plan, region, and CLI version. The authoritative local
+command is `agy models`; pass one of the exact stable slugs it prints. For
+example, a recent CLI returned:
 
 ```text
-Gemini 3.5 Flash (High)
-Gemini 3.5 Flash (Medium)
-Gemini 3.5 Flash (Low)
-Gemini 3.1 Pro (High)
-Gemini 3.1 Pro (Low)
-Gemini 3 Flash
-Claude Sonnet 4.6 (Thinking)
-Claude Opus 4.6 (Thinking)
-GPT-OSS 120B (Medium)
+gemini-3.6-flash-high
+gemini-3.6-flash-medium
+gemini-3.6-flash-low
+gemini-3.1-pro-high
+gemini-3.1-pro-low
+claude-sonnet-4-6
+claude-opus-4-6-thinking
+gpt-oss-120b-medium
 ```
 
-Some Google documentation writes these in descriptive form, for example
-`Gemini 3.1 Pro (high)` or `GPT-OSS-120b`. For MCP calls, prefer the exact
-`agy models` output for your installed CLI.
-
-## Review Preset
+## Presets
 
 Set `"preset": "review"` for the default long review profile. For Claude this
 uses the rolling model alias `model: "fable"`, `effort: "max"`,
 `timeoutMs: 900000`, and
 `syncBudgetMs: 120000`, and `maxTurns: 4` unless those fields are explicitly
 supplied. In `cross_review`, `maxTurns` is applied to the Claude leg and is
-accepted by Gemini and Antigravity legs for schema compatibility.
+accepted by Gemini and Antigravity legs for schema compatibility. Use
+`claudeEffort` or `antigravityEffort` to override each review leg.
+
+Set `"preset": "quick"` for short questions. It applies `timeoutMs: 120000`,
+`syncBudgetMs: 60000`, `effort: "low"` for Claude and Antigravity, and
+`maxTurns: 2` for Claude. Without it a one-line question inherits the review
+profile and blocks the foreground for the full two minute budget before handing
+back a job id. Explicit fields always win over a preset.
+
+## Result Size
+
+Provider output is trimmed to `maxOutputChars` characters, `12000` by default.
+An over-budget result keeps its head and tail with the omitted character count
+in between, so a large answer does not sit in the transcript for the rest of the
+task. Pass `"maxOutputChars": 0` to disable trimming for one call, or set
+`CODEX_AI_BRIDGE_MAX_RESULT_CHARS` to change the default. Failure reports trim
+each of stdout, stderr, and the provider log independently and much harder,
+since they exist to diagnose rather than to reproduce a run.
 
 ## Antigravity CLI
 
@@ -216,8 +229,8 @@ file excerpts, screenshots converted to text, or other evidence in `prompt` or
 Antigravity OAuth is logged in. Run a small `antigravity_task` smoke call after
 installing or re-authenticating Antigravity CLI.
 
-For non-agentic policies, Antigravity runs with `--sandbox` by default because
-Antigravity CLI does not have Gemini CLI's `--approval-mode=plan` equivalent.
+For non-agentic policies, Antigravity runs with both `--mode plan` and
+`--sandbox` by default.
 Set `CODEX_AI_BRIDGE_ANTIGRAVITY_SANDBOX=0` only if you intentionally want to
 disable that default. Agentic mode never auto-approves Antigravity permissions
 unless both `CODEX_AI_BRIDGE_ALLOW_AGENTIC=1` and
@@ -237,15 +250,18 @@ tool can return a `jobId` and let you poll with `ai_bridge_job`.
 | `CODEX_AI_BRIDGE_CLAUDE_MODEL` | Default Claude model. Pair with `CODEX_AI_BRIDGE_CLAUDE_EFFORT` when you want to control reasoning depth. |
 | `CODEX_AI_BRIDGE_CLAUDE_EFFORT` | Default Claude-only reasoning effort: `low`, `medium`, `high`, `xhigh`, or `max`. |
 | `CODEX_AI_BRIDGE_CLAUDE_MAX_TURNS` | Default Claude CLI internal turn limit. This is not the number of bridge calls. Use `4` for broad one-call review gates; use `1` only for strict single-turn probes. |
+| `CODEX_AI_BRIDGE_CLAUDE_PERMISSION_MODE` | Agentic Claude permission mode. Defaults to `acceptEdits`; non-agentic calls always use `plan`. |
 | `CODEX_AI_BRIDGE_DEFAULT_TIMEOUT_MS` | Hard provider timeout. Defaults to `900000` ms. Set to `0` to disable the hard timeout. |
 | `CODEX_AI_BRIDGE_SYNC_BUDGET_MS` | Foreground wait before returning a background job id. Defaults to `120000` ms. Set to `0` to wait until the provider exits. |
+| `CODEX_AI_BRIDGE_MAX_RESULT_CHARS` | Default `maxOutputChars` for provider results. Defaults to `12000`. Set to `0` to return untrimmed output. |
 | `CODEX_AI_BRIDGE_JOB_CHECK_MS` | Interval for updating the in-memory job heartbeat timestamp and MCP progress notification. Defaults to `300000` ms. It is not a provider health probe. |
 | `CODEX_AI_BRIDGE_JOB_TTL_MS` | How long completed in-memory jobs are retained. Defaults to one hour. |
 | `CODEX_AI_BRIDGE_GEMINI_COMMAND` | Override Gemini CLI command. |
 | `CODEX_AI_BRIDGE_GEMINI_MODEL` | Default Gemini model passed as `--model` unless the tool call supplies `model`. Gemini has no bridge-level `effort`; choose model capability instead. |
 | `CODEX_AI_BRIDGE_GEMINI_SANDBOX` | Set to `1` to pass Gemini sandbox options. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_COMMAND` | Override Antigravity CLI command. `AGY_COMMAND` and `ANTIGRAVITY_COMMAND` are also accepted. |
-| `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` | Default Antigravity model passed as `--model` unless the tool call supplies `model`. Use the exact model label when reasoning strength is encoded in labels such as `(Medium)` or `(high)`. |
+| `CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL` | Default Antigravity model slug passed as `--model` unless the tool call supplies `model`. Use an exact value from `agy models`. |
+| `CODEX_AI_BRIDGE_ANTIGRAVITY_EFFORT` | Default Antigravity effort: `low`, `medium`, or `high`. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_PRINT_TIMEOUT` | Override the `agy --print-timeout` value, for example `15m` or `900s`. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_SANDBOX` | Defaults to enabled for non-agentic Antigravity calls. Set to `0` to disable or `1` to force it. |
 | `CODEX_AI_BRIDGE_ANTIGRAVITY_DANGEROUS_SKIP_PERMISSIONS` | Set to `1` to pass `--dangerously-skip-permissions` only for explicitly enabled `agentic` calls. |
@@ -263,10 +279,9 @@ Antigravity at the same time without one session spending its MCP tool budget
 waiting for the other project. Workspace lock paths are canonicalized on
 Windows, including path case, so the same workspace cannot accidentally get
 two lock keys. Active locks are heartbeated, dead owner
-processes are cleaned up, and timed-out Windows provider calls terminate the
-process tree to avoid
-leaving Claude/Gemini/Antigravity children running after the bridge releases
-its lock.
+processes are cleaned up, and timed-out calls terminate the provider process
+tree. The MCP server also terminates active provider children during SIGINT or
+SIGTERM shutdown before exiting.
 
 Long provider calls are controlled by a foreground sync budget, not by killing
 the provider. `timeoutMs` is a hard provider kill deadline; it is not the normal
@@ -292,7 +307,8 @@ as the hard kill deadline. For long Claude Fable/max reviews, prefer either
 120000`. Set `"background": true` to return a `jobId` immediately.
 
 When a provider command fails, the failure output includes the working
-directory and actual `argv` used to launch the provider. This makes settings
+directory and actual `argv` used to launch the provider. Common credential
+flags in that argv are redacted. This makes settings
 such as Claude `--max-turns` visible in the error report. It also shows when a
 provider, such as the current Gemini CLI, has no corresponding argv flag.
 
@@ -339,4 +355,4 @@ ai_bridge_health
 
 ## License
 
-MIT. See the repository root `LICENSE`.
+MIT. See [LICENSE](LICENSE).

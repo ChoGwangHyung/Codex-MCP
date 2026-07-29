@@ -5,8 +5,10 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const {
+  FAILURE_TAIL_CHARS,
   MAX_HEALTH_TIMEOUT_MS,
   MIN_HEALTH_TIMEOUT_MS,
+  PROGRESS_INTERVAL_MS,
   PROMPT_ARG
 } = require("./constants.js");
 const {
@@ -22,6 +24,7 @@ const { buildPrompt } = require("./prompt.js");
 const {
   formatJobPending,
   formatJobStatus,
+  getJob,
   markJobChecked,
   startJob,
   waitForJob
@@ -33,9 +36,9 @@ const { sanitize } = require("./util.js");
 function providerCommand(provider, args) {
   if (provider === "claude") {
     const model = validateModel(args.model || process.env.CODEX_AI_BRIDGE_CLAUDE_MODEL);
-    const effort = validateEffort(args.effort || process.env.CODEX_AI_BRIDGE_CLAUDE_EFFORT);
+    const effort = validateEffort(args.effort || process.env.CODEX_AI_BRIDGE_CLAUDE_EFFORT, "claude");
     const mode = args.policy === "agentic"
-      ? (process.env.CODEX_AI_BRIDGE_CLAUDE_PERMISSION_MODE || "default")
+      ? claudePermissionMode()
       : "plan";
     const maxTurns = resolveClaudeMaxTurns(args);
     const commandArgs = [
@@ -82,9 +85,16 @@ function providerCommand(provider, args) {
 
   if (provider === "antigravity") {
     const model = validateModel(args.model || process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_MODEL);
+    const effort = validateEffort(
+      args.effort || process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_EFFORT,
+      "antigravity"
+    );
     const logFile = antigravityLogFile();
     const capture = antigravityCapture();
     const commandArgs = ["--log-file", logFile, "--print-timeout", antigravityPrintTimeout(args)];
+    if (args.policy !== "agentic") {
+      commandArgs.push("--mode", "plan");
+    }
     if (antigravitySandboxEnabled(args)) {
       commandArgs.push("--sandbox");
     }
@@ -92,6 +102,7 @@ function providerCommand(provider, args) {
       commandArgs.push("--dangerously-skip-permissions");
     }
     if (model) commandArgs.push("--model", model);
+    if (effort) commandArgs.push("--effort", effort);
     return {
       command: process.env.AGY_COMMAND || process.env.ANTIGRAVITY_COMMAND || process.env.CODEX_AI_BRIDGE_ANTIGRAVITY_COMMAND || "agy",
       args: commandArgs.concat(envJsonArray("CODEX_AI_BRIDGE_ANTIGRAVITY_ARGS_JSON")),
@@ -130,20 +141,39 @@ function antigravityCapture() {
   };
 }
 
-async function askProvider(provider, rawArgs, context = {}) {
-  if (provider !== "claude" && rawArgs && Object.prototype.hasOwnProperty.call(rawArgs, "effort")) {
-    throw new Error("effort is supported only for claude_task.");
-  }
+async function askProviderOutcome(provider, rawArgs, context = {}) {
   const args = validateTaskArgs(rawArgs, { provider });
   const prompt = buildPrompt(args);
   const command = providerCommand(provider, args);
   const job = startJob(provider, args, (runningJob) => runProvider(provider, args, prompt, command, runningJob));
-  if (args.background) return formatJobPending(job, "started in background");
+  if (args.background) {
+    return { text: formatJobPending(job, "started in background"), isError: false };
+  }
+  const reportsProgress = Boolean(context) &&
+    context.progressToken !== undefined &&
+    context.progressToken !== null &&
+    typeof context.notify === "function";
   const completed = await waitForJob(job, args.syncBudgetMs, {
+    // Without this the wait slice is the job heartbeat (5 minutes by default),
+    // so a client watching notifications/progress saw nothing for the whole
+    // foreground budget.
+    progressIntervalMs: reportsProgress ? PROGRESS_INTERVAL_MS : 0,
     onProgress: (runningJob) => reportProgress(context, runningJob)
   });
-  if (!completed) return formatJobPending(job, `still running after ${args.syncBudgetMs}ms`);
-  return formatJobStatus(job.jobId);
+  if (!completed) {
+    return {
+      text: formatJobPending(job, `still running after ${args.syncBudgetMs}ms`),
+      isError: false
+    };
+  }
+  return {
+    text: formatJobStatus(job.jobId),
+    isError: job.status !== "completed"
+  };
+}
+
+async function askProvider(provider, rawArgs, context = {}) {
+  return (await askProviderOutcome(provider, rawArgs, context)).text;
 }
 
 function reportProgress(context, job) {
@@ -162,7 +192,7 @@ async function runProvider(provider, args, prompt, command, job) {
     timeoutMs: args.timeoutMs,
     input: providerPrompt,
     onStart: (details) => markJobChecked(job, details)
-  }), { scope: args.cwd });
+  }), { scope: repoRoot() });
   const stdoutOutput = sanitize(unwrapCapturedOutput(result.stdout, command.capture));
   const recoveredOutput = !stdoutOutput && command.capture
     ? sanitize(recoverCapturedAntigravityOutput(command))
@@ -173,7 +203,7 @@ async function runProvider(provider, args, prompt, command, job) {
     return {
       ok: true,
       status: "completed",
-      text: `${provider} result:\n${output || "(no output)"}`,
+      text: `${provider} result:\n${clampResult(output, args.maxOutputChars) || "(no output)"}`,
       pid: result.pid,
       elapsedMs: result.elapsedMs
     };
@@ -308,7 +338,24 @@ function resolveClaudeMaxTurns(args) {
 }
 
 function formatArgv(command) {
-  return [command.command, ...command.args].map(formatArg).join(" ");
+  return redactArgv([command.command, ...command.args]).map(formatArg).join(" ");
+}
+
+function redactArgv(argv) {
+  const sensitive = /^(--?(?:api[-_]?key|auth[-_]?token|token|password|secret|credential))(?:=(.*))?$/i;
+  let redactNext = false;
+  return argv.map((value) => {
+    if (redactNext) {
+      redactNext = false;
+      return "<redacted>";
+    }
+    const text = String(value);
+    const match = sensitive.exec(text);
+    if (!match) return text;
+    if (text.includes("=")) return `${text.slice(0, text.indexOf("=") + 1)}<redacted>`;
+    redactNext = true;
+    return text;
+  });
 }
 
 function formatArg(value) {
@@ -320,29 +367,94 @@ function formatArg(value) {
 function tailOutput(text) {
   const clean = sanitize(text);
   if (!clean) return "";
-  return clean.slice(-4000);
+  if (clean.length <= FAILURE_TAIL_CHARS) return clean;
+  return clampTailWithNotice(clean, FAILURE_TAIL_CHARS);
 }
 
-function jobStatus(rawArgs) {
+// Provider answers usually open with a summary and close with the conclusion,
+// so an over-budget result keeps both ends instead of a single tail.
+function clampResult(text, maxChars) {
+  const clean = String(text || "");
+  const limit = Number(maxChars);
+  if (!Number.isInteger(limit) || limit <= 0 || clean.length <= limit) return clean;
+  let retainedChars = limit;
+  let notice = "";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const omittedChars = Math.max(0, clean.length - retainedChars);
+    notice = `\n[... ${omittedChars} of ${clean.length} chars omitted; raise maxOutputChars for the full text ...]\n`;
+    retainedChars = Math.max(0, limit - notice.length);
+  }
+  if (retainedChars === 0) return clean.slice(0, limit);
+  const headChars = Math.floor(retainedChars * 0.6);
+  const tailChars = retainedChars - headChars;
+  return [
+    clean.slice(0, headChars),
+    notice,
+    clean.slice(-tailChars)
+  ].join("");
+}
+
+function clampTailWithNotice(text, limit) {
+  let retainedChars = limit;
+  let notice = "";
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    notice = `[trimmed ${Math.max(0, text.length - retainedChars)} of ${text.length} chars]\n`;
+    retainedChars = Math.max(0, limit - notice.length);
+  }
+  if (retainedChars === 0) return text.slice(-limit);
+  return `${notice}${text.slice(-retainedChars)}`;
+}
+
+function jobStatusOutcome(rawArgs) {
   if (!rawArgs || typeof rawArgs.jobId !== "string" || !rawArgs.jobId.trim()) {
     throw new Error("jobId is required");
   }
-  return formatJobStatus(rawArgs.jobId.trim());
+  const job = getJob(rawArgs.jobId.trim());
+  if (!job) {
+    return {
+      text: `job not found: ${sanitize(rawArgs.jobId.trim())}`,
+      isError: true
+    };
+  }
+  return {
+    text: formatJobStatus(job.jobId),
+    isError: job.status !== "running" && job.status !== "completed"
+  };
+}
+
+function claudePermissionMode() {
+  const mode = String(process.env.CODEX_AI_BRIDGE_CLAUDE_PERMISSION_MODE || "acceptEdits");
+  const supported = new Set(["manual", "auto", "acceptEdits", "dontAsk", "plan", "bypassPermissions"]);
+  if (!supported.has(mode)) {
+    throw new Error(`Unsupported Claude permission mode: ${mode}`);
+  }
+  return mode;
 }
 
 async function healthCheck(rawArgs) {
   const timeoutMs = normalizeTimeout(rawArgs && rawArgs.timeoutMs, 10000, MIN_HEALTH_TIMEOUT_MS, MAX_HEALTH_TIMEOUT_MS);
   const checks = await Promise.all(["claude", "gemini", "antigravity"].map(async (provider) => {
-    const command = providerCommand(provider, { policy: "advisory" });
-    const result = await runCommand(command.command, ["--version"], { cwd: repoRoot, timeoutMs, input: "" });
-    const output = sanitize(result.stdout || result.stderr).split(/\r?\n/)[0];
-    return `${provider}: ${result.ok ? "ok" : "unavailable"}${output ? ` (${output})` : ""}`;
+    // Each provider reports on its own line. A bad env override for one of them
+    // used to reject the whole Promise.all and hide the other two.
+    try {
+      const command = providerCommand(provider, { policy: "advisory" });
+      const result = await runCommand(command.command, ["--version"], { cwd: repoRoot(), timeoutMs, input: "" });
+      const output = sanitize(result.stdout || result.stderr).split(/\r?\n/)[0];
+      return `${provider}: ${result.ok ? "ok" : "unavailable"}${output ? ` (${output})` : ""}`;
+    } catch (error) {
+      return `${provider}: misconfigured (${sanitize(error && error.message || "unknown error")})`;
+    }
   }));
   return checks.join("\n");
 }
 
 module.exports = {
   askProvider,
+  askProviderOutcome,
   healthCheck,
-  jobStatus
+  jobStatusOutcome,
+  _test: {
+    clampResult,
+    tailOutput
+  }
 };

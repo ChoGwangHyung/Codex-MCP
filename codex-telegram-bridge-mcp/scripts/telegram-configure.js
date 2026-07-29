@@ -87,6 +87,7 @@ async function main() {
     const chatId = requireArg(rest[0], "chat id");
     updateAccess((access) => {
       access.allowFrom = access.allowFrom.filter((item) => item !== String(chatId));
+      delete access.approvalByChat[String(chatId)];
     });
     showStatus();
     return;
@@ -189,6 +190,13 @@ async function pairChat(inputCode) {
 
   const chatId = String(match.message.chat.id);
   addUnique(access.allowFrom, chatId);
+  if (match.message.from && match.message.from.id !== undefined) {
+    const users = Array.isArray(access.approvalByChat[chatId])
+      ? access.approvalByChat[chatId]
+      : [];
+    addUnique(users, String(match.message.from.id));
+    access.approvalByChat[chatId] = users;
+  }
   access.dmPolicy = "allowlist";
   delete access.pending[code];
   writeAccess(access);
@@ -324,6 +332,12 @@ function normalizeAccess(value) {
     ...defaultAccess(),
     ...access,
     allowFrom: Array.isArray(access.allowFrom) ? access.allowFrom.map(String) : [],
+    approvalByChat: access.approvalByChat && typeof access.approvalByChat === "object"
+      ? Object.fromEntries(Object.entries(access.approvalByChat).map(([chatId, users]) => [
+          String(chatId),
+          Array.isArray(users) ? users.map(String) : []
+        ]))
+      : {},
     groups: access.groups && typeof access.groups === "object" ? access.groups : {},
     pending: access.pending && typeof access.pending === "object" ? access.pending : {}
   };
@@ -333,6 +347,7 @@ function defaultAccess() {
   return {
     dmPolicy: "allowlist",
     allowFrom: [],
+    approvalByChat: {},
     groups: {},
     pending: {}
   };

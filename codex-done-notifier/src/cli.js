@@ -60,6 +60,9 @@ function enable(args = []) {
   const sessionId = optionValue(args, "--session");
   const sound = optionValue(args, "--sound");
   const soundFile = optionValue(args, "--sound-file");
+  const preview = hasFlag(args, "--preview")
+    ? true
+    : hasFlag(args, "--no-preview") ? false : baseConfig.preview === true;
   const hasSoundSetting = hasSoundOverride(args);
   const hasNotificationSetting = hasNotificationOverride(args);
   const hasOutputOverride = hasSoundSetting || hasNotificationSetting;
@@ -72,7 +75,7 @@ function enable(args = []) {
     : hasOutputOverride ? hasNotificationSetting ? requestedNotificationEnabled(args) : markerNotificationEnabled(baseConfig) : true;
   const selectedSound = sound || baseConfig.sound || defaultSoundName();
   const selectedSoundFile = soundFile
-    ? path.resolve(cwd, soundFile)
+    ? portableSoundFile(soundFile, { cwd, global })
     : typeof baseConfig.soundFile === "string" ? baseConfig.soundFile : "";
   const config = {
     enabled: soundEnabled || desktopNotificationEnabled,
@@ -80,7 +83,8 @@ function enable(args = []) {
     sound: selectedSound,
     soundFile: selectedSoundFile,
     soundEnabled,
-    notificationEnabled: desktopNotificationEnabled
+    notificationEnabled: desktopNotificationEnabled,
+    preview
   };
   const result = ensureHookInstalled({ global, cwd, hookConfig: config });
   console.log(`${config.enabled ? "enabled" : "disabled"}: ${result.path}`);
@@ -88,6 +92,7 @@ function enable(args = []) {
   if (sessionId) console.log(`session: ${sessionId}`);
   console.log(`sound: ${soundEnabled ? selectedSound : "off"}`);
   console.log(`notification: ${desktopNotificationEnabled ? "on" : "off"}`);
+  console.log(`preview: ${preview ? "on" : "off"}`);
   if (soundEnabled && selectedSoundFile) console.log(`sound_file: ${selectedSoundFile}`);
 }
 
@@ -105,7 +110,8 @@ function disable(args = []) {
       sound: baseConfig.sound || defaultSoundName(),
       soundFile: typeof baseConfig.soundFile === "string" ? baseConfig.soundFile : "",
       soundEnabled: markerSoundEnabled(baseConfig),
-      notificationEnabled: markerNotificationEnabled(baseConfig)
+      notificationEnabled: markerNotificationEnabled(baseConfig),
+      preview: baseConfig.preview === true
     }
   });
   console.log(`disabled: ${result.path}`);
@@ -136,6 +142,7 @@ function status(args = []) {
     console.log(`config_enabled: ${config.enabled === false ? "no" : "yes"}`);
     console.log(`sound: ${markerSoundEnabled(config) ? config.sound || defaultSoundName() : "off"}`);
     console.log(`notification: ${markerNotificationEnabled(config) ? "on" : "off"}`);
+    console.log(`preview: ${config.preview === true ? "on" : "off"}`);
     if (markerSoundEnabled(config) && config.soundFile) console.log(`sound_file: ${config.soundFile}`);
   }
   console.log(`session_env_enabled: ${process.env.CODEX_DONE_NOTIFIER_ENABLED === "1" ? "yes" : "no"}`);
@@ -179,15 +186,21 @@ async function testNotification() {
   const localConfig = currentNotifierConfig({ global: false, cwd: process.cwd() });
   const globalConfig = currentNotifierConfig({ global: true, cwd: process.cwd() });
   const markerConfig = localConfig.configured ? localConfig : globalConfig.configured ? globalConfig : defaultHookConfig();
-  await sendNotification({
+  const result = await sendNotification({
     title: process.env.CODEX_DONE_NOTIFIER_TITLE || "Codex task completed",
     body: "codex-done-notifier test notification",
     sound: notificationSound(markerConfig),
-    soundFile: notificationSoundFile(markerConfig),
+    soundFile: notificationSoundFile(markerConfig, process.cwd()),
     soundEnabled: markerSoundEnabled(markerConfig),
     notificationEnabled: markerNotificationEnabled(markerConfig)
   });
-  console.log("sent");
+  if (result.skipped) {
+    console.log("skipped: no notification outputs enabled");
+  } else if (result.dispatched === false) {
+    throw new Error("notification process failed to start or exited unsuccessfully");
+  } else {
+    console.log("dispatched");
+  }
 }
 
 function printHookSnippet() {
@@ -204,11 +217,12 @@ async function handleHookInput(input, hookConfig = {}) {
   const markerConfig = hookConfig.configured ? hookConfig : defaultHookConfig();
   await sendNotification({
     title: process.env.CODEX_DONE_NOTIFIER_TITLE || "Codex task completed",
-    body: notificationBody(input, cwd),
+    body: notificationBody(input, cwd, markerConfig.preview === true),
     sound: notificationSound(markerConfig),
-    soundFile: notificationSoundFile(markerConfig),
+    soundFile: notificationSoundFile(markerConfig, cwd),
     soundEnabled: markerSoundEnabled(markerConfig),
-    notificationEnabled: markerNotificationEnabled(markerConfig)
+    notificationEnabled: markerNotificationEnabled(markerConfig),
+    wait: false
   });
   return { notified: true, config: markerConfig };
 }
@@ -226,8 +240,9 @@ function shouldNotify({ sessionId, hookConfig = {} }) {
   return false;
 }
 
-function notificationBody(input, cwd) {
+function notificationBody(input, cwd, preview = false) {
   const name = path.basename(path.resolve(cwd)) || path.resolve(cwd);
+  if (!preview) return `${name} is done.`;
   const message = String(input && (input.last_assistant_message || input.lastAssistantMessage) || "")
     .split(/\r?\n/)
     .map((line) => line.trim())
@@ -236,7 +251,7 @@ function notificationBody(input, cwd) {
   return `${name}: ${truncate(message, 160)}`;
 }
 
-async function sendNotification({ title, body, sound, soundFile, soundEnabled = true, notificationEnabled = true }) {
+async function sendNotification({ title, body, sound, soundFile, soundEnabled = true, notificationEnabled = true, wait = true }) {
   const safeTitle = truncate(String(title || "Codex task completed"), 80);
   const safeBody = truncate(String(body || "Done."), 220);
   const selectedSound = soundEnabled ? normalizeSoundName(sound || process.env.CODEX_DONE_NOTIFIER_SOUND || defaultSoundName()) : "none";
@@ -249,7 +264,7 @@ async function sendNotification({ title, body, sound, soundFile, soundEnabled = 
     return { platform: process.platform, sound: selectedSound, soundFile: selectedSoundFile, notification: selectedNotificationEnabled, dryRun: true };
   }
   if (process.platform === "win32") {
-    runForeground("powershell.exe", [
+    const args = [
       "-NoProfile",
       "-ExecutionPolicy",
       "Bypass",
@@ -257,39 +272,83 @@ async function sendNotification({ title, body, sound, soundFile, soundEnabled = 
       "Hidden",
       "-EncodedCommand",
       Buffer.from(windowsNotificationScript(safeTitle, safeBody, selectedSound, selectedSoundFile, selectedNotificationEnabled), "utf16le").toString("base64")
-    ], 4500);
-    return { platform: "win32", sound: selectedSound, soundFile: selectedSoundFile, notification: selectedNotificationEnabled };
+    ];
+    // The notification script blocks for PowerShell startup, synchronous WAV
+    // playback, and up to three seconds of tray balloon. On the Stop hook that
+    // delay is added to the end of every Codex turn, so the launch is detached
+    // and only confirmed to have started. `--test` and CODEX_DONE_NOTIFIER_WAIT
+    // keep the blocking path, where the real exit code is what is being checked.
+    const dispatched = waitForNotification(wait)
+      ? runForeground("powershell.exe", args, 15000)
+      : await spawnDetached("powershell.exe", args);
+    return {
+      platform: "win32",
+      sound: selectedSound,
+      soundFile: selectedSoundFile,
+      notification: selectedNotificationEnabled,
+      dispatched
+    };
   }
   if (process.platform === "darwin") {
     const soundArg = selectedSoundFile || selectedSound === "none"
       ? ""
       : ` sound name ${appleScriptString(macSoundName(selectedSound))}`;
-    if (selectedNotificationEnabled) spawnDetached("osascript", ["-e", `display notification ${appleScriptString(safeBody)} with title ${appleScriptString(safeTitle)}${soundArg}`]);
-    if (selectedSoundFile) spawnDetached("afplay", [selectedSoundFile]);
-    else if (!selectedNotificationEnabled && selectedSound !== "none") spawnDetached("afplay", [`/System/Library/Sounds/${macSoundName(selectedSound)}.aiff`]);
-    return { platform: "darwin", sound: selectedSound, soundFile: selectedSoundFile, notification: selectedNotificationEnabled };
+    const launches = [];
+    if (selectedNotificationEnabled) launches.push(spawnDetached("osascript", ["-e", `display notification ${appleScriptString(safeBody)} with title ${appleScriptString(safeTitle)}${soundArg}`]));
+    if (selectedSoundFile) launches.push(spawnDetached("afplay", [selectedSoundFile]));
+    else if (!selectedNotificationEnabled && selectedSound !== "none") launches.push(spawnDetached("afplay", [`/System/Library/Sounds/${macSoundName(selectedSound)}.aiff`]));
+    return {
+      platform: "darwin",
+      sound: selectedSound,
+      soundFile: selectedSoundFile,
+      notification: selectedNotificationEnabled,
+      dispatched: (await Promise.all(launches)).every(Boolean)
+    };
   }
+  const launches = [];
   if (selectedNotificationEnabled) {
-    spawnDetached("sh", [
+    launches.push(spawnDetached("sh", [
       "-c",
       "if command -v notify-send >/dev/null 2>&1; then notify-send \"$1\" \"$2\"; fi",
       "codex-done-notifier",
       safeTitle,
       safeBody
-    ]);
+    ]));
   }
-  return { platform: process.platform, sound: selectedSound, soundFile: selectedSoundFile, notification: selectedNotificationEnabled };
+  if (selectedSoundFile || selectedSound !== "none") {
+    launches.push(spawnDetached("sh", [
+      "-c",
+      [
+        "file=$1",
+        "if [ -n \"$file\" ] && command -v paplay >/dev/null 2>&1; then paplay \"$file\"",
+        "elif [ -n \"$file\" ] && command -v aplay >/dev/null 2>&1; then aplay \"$file\"",
+        "elif [ -n \"$file\" ] && command -v ffplay >/dev/null 2>&1; then ffplay -nodisp -autoexit -loglevel quiet \"$file\"",
+        "elif [ -n \"$file\" ] && command -v play >/dev/null 2>&1; then play -q \"$file\"",
+        "elif command -v canberra-gtk-play >/dev/null 2>&1; then canberra-gtk-play -i message-new-instant",
+        "else printf '\\a'",
+        "fi"
+      ].join("; "),
+      "codex-done-notifier",
+      selectedSoundFile
+    ]));
+  }
+  return {
+    platform: process.platform,
+    sound: selectedSound,
+    soundFile: selectedSoundFile,
+    notification: selectedNotificationEnabled,
+    dispatched: (await Promise.all(launches)).every(Boolean)
+  };
 }
 
 function windowsNotificationScript(title, body, sound, soundFile, notificationEnabled = true) {
-  const lines = [
+  const prelude = [
     "$ErrorActionPreference = 'SilentlyContinue'",
     `$title = ${powerShellString(title)}`,
-    `$body = ${powerShellString(body)}`,
-    windowsSoundScript(sound, soundFile)
+    `$body = ${powerShellString(body)}`
   ];
-  if (!notificationEnabled) return lines.join("\n");
-  return lines.concat([
+  if (!notificationEnabled) return prelude.concat(windowsSoundScript(sound, soundFile)).join("\n");
+  return prelude.concat([
     "$toastShown = $false",
     "try {",
     "  [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null",
@@ -321,7 +380,8 @@ function windowsNotificationScript(title, body, sound, soundFile, notificationEn
     "  $notify.ShowBalloonTip(3000)",
     "  Start-Sleep -Seconds 3",
     "  $notify.Dispose()",
-    "}"
+    "}",
+    windowsSoundScript(sound, soundFile)
   ]).join("\n");
 }
 
@@ -423,7 +483,8 @@ function defaultHookConfig() {
     sound: defaultSoundName(),
     soundFile: "",
     soundEnabled: true,
-    notificationEnabled: true
+    notificationEnabled: true,
+    preview: false
   };
 }
 
@@ -445,7 +506,8 @@ function normalizeHookConfig(config = {}) {
     sound,
     soundFile: String(config.soundFile || "").trim(),
     soundEnabled,
-    notificationEnabled
+    notificationEnabled,
+    preview: config.preview === true
   };
 }
 
@@ -632,6 +694,7 @@ function globalCodexConfigPath() {
 
 function baseHookCommand() {
   if (process.env.CODEX_DONE_NOTIFIER_HOOK_COMMAND) return process.env.CODEX_DONE_NOTIFIER_HOOK_COMMAND;
+  if (commandAvailable("codex-done-notifier")) return "codex-done-notifier hook";
   return `node ${quoteCommandArg(__filename)} hook`;
 }
 
@@ -643,6 +706,7 @@ function buildHookCommand(config) {
   if (normalized.soundFile) args.push("--sound-file", normalized.soundFile);
   if (!normalized.soundEnabled) args.push("--no-sound");
   if (!normalized.notificationEnabled) args.push("--no-notification");
+  if (normalized.preview) args.push("--preview");
   if (normalized.sessions.length > 0) args.push("--session", normalized.sessions.join(","));
   return [baseHookCommand(), ...args.map(quoteCommandArg)].join(" ");
 }
@@ -685,8 +749,32 @@ function extractHookStateSection(text) {
 function ensureCodexHooksFeature(text) {
   const content = String(text || "");
   const lines = content.split(/\r?\n/);
-  const featureHeaderIndex = lines.findIndex((line) => /^\s*\[features]\s*$/.test(line));
-  if (featureHeaderIndex < 0) return appendSection(content, ["[features]", "hooks = true"].join("\n"));
+  let featureHeaderIndex = lines.findIndex((line) => /^\s*\[features]\s*$/.test(line));
+  if (featureHeaderIndex < 0) {
+    const firstTableIndex = lines.findIndex((line) => /^\s*\[/.test(line));
+    const rootEnd = firstTableIndex < 0 ? lines.length : firstTableIndex;
+    let dottedHooksIndex = -1;
+    for (let index = rootEnd - 1; index >= 0; index -= 1) {
+      if (/^\s*features\.codex_hooks\s*=/.test(lines[index])) {
+        lines.splice(index, 1);
+        if (dottedHooksIndex > index) dottedHooksIndex -= 1;
+        continue;
+      }
+      if (/^\s*features\.hooks\s*=/.test(lines[index])) dottedHooksIndex = index;
+    }
+    if (dottedHooksIndex >= 0) {
+      lines[dottedHooksIndex] = "features.hooks = true";
+      return lines.join("\n").trimEnd();
+    }
+    return appendSection(content, ["[features]", "hooks = true"].join("\n"));
+  }
+
+  for (let index = featureHeaderIndex - 1; index >= 0; index -= 1) {
+    if (/^\s*features\.(?:codex_hooks|hooks)\s*=/.test(lines[index])) {
+      lines.splice(index, 1);
+      featureHeaderIndex -= 1;
+    }
+  }
 
   let nextTableIndex = lines.length;
   for (let index = featureHeaderIndex + 1; index < lines.length; index += 1) {
@@ -723,7 +811,8 @@ function appendManagedHookBlock(text, hookConfig) {
       sound: normalized.sound,
       soundFile: normalized.soundFile,
       soundEnabled: normalized.soundEnabled,
-      notificationEnabled: normalized.notificationEnabled
+      notificationEnabled: normalized.notificationEnabled,
+      preview: normalized.preview
     })}`,
     "[[hooks.Stop]]",
     'matcher = "*"',
@@ -803,12 +892,19 @@ function notificationSound(config) {
   return normalizeSoundName(config && config.sound || defaultSoundName());
 }
 
-function notificationSoundFile(config, marker = "") {
+function notificationSoundFile(config, baseDir = process.cwd()) {
   if (!markerSoundEnabled(config)) return "";
   const value = String(config && config.soundFile || "").trim();
   if (!value) return "";
   if (path.isAbsolute(value)) return value;
-  return path.resolve(process.cwd(), value);
+  return path.resolve(baseDir, value);
+}
+
+function portableSoundFile(value, options = {}) {
+  const selected = String(value || "").trim();
+  if (!selected || path.isAbsolute(selected)) return selected;
+  if (options.global) return path.resolve(options.cwd || process.cwd(), selected);
+  return path.normalize(selected);
 }
 
 function defaultSoundName() {
@@ -864,7 +960,8 @@ function hookConfigFromArgs(args = []) {
     sound,
     soundFile: optionValue(list, "--sound-file"),
     soundEnabled,
-    notificationEnabled
+    notificationEnabled,
+    preview: hasFlag(list, "--preview") && !hasFlag(list, "--no-preview")
   });
 }
 
@@ -928,6 +1025,7 @@ function withFileLock(lockFile, callback) {
       fd = fs.openSync(lockFile, "wx");
     } catch (error) {
       if (!error || error.code !== "EEXIST" || Date.now() > deadline) throw error;
+      removeStaleNotifierLock(lockFile);
       sleepMs(50);
     }
   }
@@ -944,6 +1042,15 @@ function withFileLock(lockFile, callback) {
     } catch {
       // Ignore cleanup failures.
     }
+  }
+}
+
+function removeStaleNotifierLock(lockFile) {
+  try {
+    const stat = fs.statSync(lockFile);
+    if (Date.now() - stat.mtimeMs > 30000) fs.unlinkSync(lockFile);
+  } catch {
+    // A competing process may have released the lock.
   }
 }
 
@@ -1003,24 +1110,53 @@ function truncate(value, max) {
 }
 
 function spawnDetached(command, args) {
-  try {
-    const child = spawn(command, args, { detached: true, stdio: "ignore" });
-    child.unref();
-  } catch {
-    // Notification failures must not affect the Codex turn.
-  }
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: true });
+    } catch {
+      resolve(false);
+      return;
+    }
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    child.once("error", () => finish(false));
+    child.once("spawn", () => {
+      child.unref();
+      finish(true);
+    });
+  });
+}
+
+function waitForNotification(wait) {
+  if (process.env.CODEX_DONE_NOTIFIER_WAIT === "1") return true;
+  if (process.env.CODEX_DONE_NOTIFIER_WAIT === "0") return false;
+  return wait !== false;
 }
 
 function runForeground(command, args, timeoutMs) {
   try {
-    spawnSync(command, args, {
+    const result = spawnSync(command, args, {
       stdio: "ignore",
       windowsHide: true,
       timeout: timeoutMs
     });
+    return !result.error && result.status === 0;
   } catch {
     // Notification failures must not affect the Codex turn.
+    return false;
   }
+}
+
+function commandAvailable(command) {
+  const probe = process.platform === "win32"
+    ? spawnSync("where.exe", [command], { stdio: "ignore", windowsHide: true })
+    : spawnSync("sh", ["-c", "command -v \"$1\" >/dev/null 2>&1", "codex-done-notifier", command], { stdio: "ignore" });
+  return !probe.error && probe.status === 0;
 }
 
 function quoteCommandArg(value) {
@@ -1057,7 +1193,7 @@ function usage(exitCode) {
     "Commands:",
     "  configure       Install the local project Codex Stop hook and enable notifications",
     "  configure --global",
-    "                  Install the user-level Codex Stop hook and enable this project",
+    "                  Install the user-level Codex Stop hook for all projects without a local override",
     "  configure --no-enable",
     "                  Install the hook in disabled state",
     "  unconfigure     Remove the local managed Stop hook block",
@@ -1074,9 +1210,11 @@ function usage(exitCode) {
     "                  Keep desktop notifications on and turn sound off",
     "  enable --no-notification | --sound-only",
     "                  Keep sound on and turn desktop notifications off",
+    "  enable --preview",
+    "                  Include the first assistant response line in the desktop notification",
     "  disable         Disable notifications for the current project",
     "  status          Show hook and current project status",
-    "  trust           Persist the current hook trust hash in ~/.codex/config.toml",
+    "  trust           Best-effort trust-state update; /hooks remains authoritative",
     "  hook            Run as a Codex Stop hook",
     "  test            Send a test notification",
     "  hook-snippet    Print the managed hook TOML"
@@ -1099,6 +1237,8 @@ module.exports = {
     notificationBody,
     notificationSound,
     notificationSoundFile,
+    spawnDetached,
+    portableSoundFile,
     normalizeSoundName,
     removeManagedHookBlock,
     windowsDefaultSoundFile,

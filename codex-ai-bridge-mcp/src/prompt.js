@@ -42,7 +42,7 @@ function buildPrompt(args) {
   return [
     roleInstructions(args.role, args.policy),
     "",
-    `Repository root: ${repoRoot}`,
+    `Repository root: ${repoRoot()}`,
     `Working directory: ${args.cwd}`,
     `Requested role: ${args.role}`,
     "",

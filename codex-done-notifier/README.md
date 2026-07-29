@@ -25,6 +25,9 @@ Use a user-level hook only when you want one hook available across projects:
 codex-done-notifier configure --global
 ```
 
+The global hook applies to every project that does not define a local managed
+notifier hook. Use local `configure` when only selected projects should notify.
+
 ## Install From This Repository
 
 ```powershell
@@ -47,8 +50,9 @@ vs `d:\project`, run:
 codex-done-notifier trust
 ```
 
-This records the current hook hash for the normal and lowercase path forms in
-`~/.codex/config.toml`.
+This makes a best-effort update to Codex's current trust-state format for the
+normal and lowercase path forms. Codex `/hooks` is the authoritative review UI;
+a future Codex release may require reviewing there again.
 
 ## Enable One Project
 
@@ -82,7 +86,10 @@ codex-done-notifier enable --sound-file .codex\done.wav
 ```
 
 On Windows, custom sound files use `System.Media.SoundPlayer`, so `.wav` is the
-portable choice. On macOS, custom sound files are played with `afplay`.
+portable choice. On macOS, custom sound files are played with `afplay`. Linux
+tries `paplay`, `aplay`, `ffplay`, or `play`, in that order. Local project
+configuration keeps a relative sound path and resolves it from the hook input's
+project working directory; global configuration stores it as an absolute path.
 
 Turn off only the sound while keeping desktop notifications:
 
@@ -95,6 +102,16 @@ Turn off only the desktop notification while keeping sound:
 ```powershell
 codex-done-notifier enable --no-notification
 ```
+
+Desktop notifications show only `<project> is done.` by default. To include the
+first line of the final assistant response, opt in for that project:
+
+```powershell
+codex-done-notifier enable --preview
+```
+
+Preview text can expose response content on a lock screen. Run
+`codex-done-notifier enable --no-preview` to turn it off again.
 
 If both outputs are turned off, the project behaves as disabled. A later plain
 `enable` turns both outputs back on. If only one output was off before a full
@@ -134,7 +151,7 @@ codex resume
 | Command | Purpose |
 | --- | --- |
 | `configure` | Install the local project Codex `Stop` hook and enable notifications. |
-| `configure --global` | Install the user-level Codex `Stop` hook and enable the current project. |
+| `configure --global` | Install the user-level Codex `Stop` hook for projects without a local override. |
 | `configure --no-enable` | Install the hook in disabled state. |
 | `unconfigure` | Remove the local managed hook block. |
 | `unconfigure --global` | Remove the user-level managed hook block. |
@@ -144,9 +161,11 @@ codex resume
 | `enable --sound-file <path>` | Set the current project's sound file. |
 | `enable --no-sound` or `enable --notification-only` | Turn off sound only. |
 | `enable --no-notification` or `enable --sound-only` | Turn off desktop notifications only. |
+| `enable --preview` | Include the first assistant response line in notifications. |
+| `enable --no-preview` | Keep notification text project-only. |
 | `disable` | Disable notifications for the current project. |
 | `status` | Show hook and current project status. |
-| `trust` | Record the current hook trust hash, including Windows path-case variants. |
+| `trust` | Best-effort trust-state update; Codex `/hooks` remains authoritative. |
 | `test` | Send a test notification. |
 | `hook-snippet` | Print the hook TOML snippet. |
 
@@ -159,6 +178,13 @@ The hook reads the Codex hook JSON from stdin and checks:
 - or the managed hook options stored in `.codex/config.toml`
 
 If none match, it exits quietly.
+
+The hook launches the notification detached and returns as soon as the launch is
+confirmed, so PowerShell startup, sound playback, and the tray balloon fallback
+do not delay the end of a Codex turn. `codex-done-notifier test` still waits for
+the notification process to finish, because that is where a real exit code
+matters. Set `CODEX_DONE_NOTIFIER_WAIT=1` to make the hook wait too, or
+`CODEX_DONE_NOTIFIER_WAIT=0` to stop `test` from waiting.
 
 ## Troubleshooting
 
@@ -179,7 +205,8 @@ Windows cause is a path-casing mismatch in Codex's hook trust key. Run
 `codex-done-notifier trust` from the project directory, then exit and resume the
 session once.
 
-If `test` prints `sent` but nothing appears, the hook is runnable and the issue
+If `test` prints `dispatched` but nothing appears, the notification process
+started successfully and the issue
 is usually the desktop notification environment: Windows Focus Assist, disabled
 PowerShell/terminal notifications, or a silent system sound scheme. On Windows,
 the notifier uses BurntToast when that module is available, otherwise it falls
@@ -196,8 +223,13 @@ The default Windows `exclamation` preset first tries
   tray balloon fallback, plus built-in `.wav`, `[Console]::Beep`, or a custom
   `.wav` file.
 - macOS: `osascript` notification plus a system sound or `afplay` file.
-- Linux: `notify-send` notification when available. Sound playback is not
-  enabled by default.
+- Linux: `notify-send` notification when available. Sound uses a configured
+  file player, `canberra-gtk-play`, or a terminal bell fallback.
+
+The generated hook command prefers the installed `codex-done-notifier` binary.
+A source checkout falls back to its local script path when that binary is not
+available. Do not commit machine-specific generated hook commands or custom
+sound paths to a public repository.
 
 ## License
 

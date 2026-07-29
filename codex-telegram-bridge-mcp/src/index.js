@@ -11,8 +11,7 @@ const {
   formatAppServerRelayInput,
   formatConsoleRelayPrompt,
   formatRelayPrompt,
-  isApprovalDecisionRelayMessage,
-  relayReplyInstructionLines
+  isApprovalDecisionRelayMessage
 } = require("./relay.js");
 
 if (require.main === module) {
@@ -25,7 +24,6 @@ module.exports = {
     formatRelayPrompt,
     formatConsoleRelayPrompt,
     isApprovalDecisionRelayMessage,
-    relayReplyInstructionLines,
     relayEnabled,
     relayReplyRequired,
     telegramEnabled

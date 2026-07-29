@@ -236,10 +236,32 @@ function writeTextAtomic(file, text) {
 function ensureCodexHooksFeature(text) {
   const content = String(text || "");
   const lines = content.split(/\r?\n/);
-  const featureHeaderIndex = lines.findIndex((line) => /^\s*\[features]\s*$/.test(line));
+  let featureHeaderIndex = lines.findIndex((line) => /^\s*\[features]\s*$/.test(line));
 
   if (featureHeaderIndex < 0) {
+    const firstTableIndex = lines.findIndex((line) => /^\s*\[/.test(line));
+    const rootEnd = firstTableIndex < 0 ? lines.length : firstTableIndex;
+    let dottedHooksIndex = -1;
+    for (let index = rootEnd - 1; index >= 0; index -= 1) {
+      if (/^\s*features\.codex_hooks\s*=/.test(lines[index])) {
+        lines.splice(index, 1);
+        if (dottedHooksIndex > index) dottedHooksIndex -= 1;
+        continue;
+      }
+      if (/^\s*features\.hooks\s*=/.test(lines[index])) dottedHooksIndex = index;
+    }
+    if (dottedHooksIndex >= 0) {
+      lines[dottedHooksIndex] = "features.hooks = true";
+      return lines.join("\n").trimEnd();
+    }
     return appendSection(content, ["[features]", "hooks = true"].join("\n"));
+  }
+
+  for (let index = featureHeaderIndex - 1; index >= 0; index -= 1) {
+    if (/^\s*features\.(?:codex_hooks|hooks)\s*=/.test(lines[index])) {
+      lines.splice(index, 1);
+      featureHeaderIndex -= 1;
+    }
   }
 
   let nextTableIndex = lines.length;

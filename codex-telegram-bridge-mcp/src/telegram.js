@@ -15,10 +15,12 @@ const {
   orphanCallbackMaxAgeMs,
   telegramEnabled,
   allowedChatIds,
+  approvalUserAllowed,
   assertTelegram,
   bridgeEnabled,
   telegramDownloadDir,
-  relayTargetCwd
+  relayTargetCwd,
+  relayTargetThreadId
 } = require("./config.js");
 const {
   readTelegramState,
@@ -82,29 +84,61 @@ function setRelayHooks(hooks) {
   };
 }
 
-async function telegramApiRequest(method, body, multipart = false) {
+async function telegramApiRequest(method, body, multipart = false, options = {}) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) throw new Error("TELEGRAM_BOT_TOKEN is not configured.");
+  const timeoutMs = telegramRequestTimeoutMs(
+    method,
+    body,
+    options.timeoutMs,
+    multipart ? 120000 : 30000
+  );
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (typeof timer.unref === "function") timer.unref();
   const request = multipart
-    ? { method: "POST", body }
+    ? { method: "POST", body, signal: controller.signal }
     : {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(body || {})
+        body: JSON.stringify(body || {}),
+        signal: controller.signal
       };
-  const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, request);
-  const resultBody = await response.json().catch(() => ({}));
-  if (!response.ok || resultBody.ok !== true) {
-    throw new Error(`Telegram API failed: ${sanitize(resultBody.description || response.statusText)}`);
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${token}/${method}`, request);
+    const resultBody = await response.json().catch(() => ({}));
+    if (!response.ok || resultBody.ok !== true) {
+      throw new Error(`Telegram API failed: ${sanitize(resultBody.description || response.statusText)}`);
+    }
+    return resultBody.result;
+  } catch (error) {
+    if (controller.signal.aborted) {
+      throw new Error(`Telegram API ${method} timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
   }
-  return resultBody.result;
 }
 
-async function telegramApi(method, payload) {
-  return telegramApiRequest(method, payload, false);
+function telegramRequestTimeoutMs(method, body, override, fallback = 30000) {
+  const configured = normalizeInteger(
+    override || process.env.CODEX_TELEGRAM_API_TIMEOUT_MS,
+    fallback,
+    1000,
+    300000
+  );
+  if (method !== "getUpdates") return configured;
+  const pollMs = Math.max(0, Number(body && body.timeout || 0)) * 1000;
+  return Math.max(configured, pollMs + 10000);
 }
 
-async function telegramApiMultipart(method, formData) {
-  return telegramApiRequest(method, formData, true);
+async function telegramApi(method, payload, options = {}) {
+  return telegramApiRequest(method, payload, false, options);
+}
+
+async function telegramApiMultipart(method, formData, options = {}) {
+  return telegramApiRequest(method, formData, true, options);
 }
 
 async function telegramSend(args) {
@@ -302,7 +336,15 @@ function safeFileName(value) {
   return name || "upload";
 }
 
+// Discards anything already queued so the next question is not answered by an
+// older message. When the background monitor is already draining Telegram, the
+// broker cursor reset alone is enough, and skipping the poll lock avoids
+// queueing behind an in-flight long poll of up to monitorPollTimeoutSec.
 async function telegramSyncOffset() {
+  if (monitorIsDraining()) {
+    await createBrokerSubscription(monitorSubscriberId(), { startAtEnd: true, reset: true });
+    return;
+  }
   await withPollLock(async () => {
     for (let drainCount = 0; drainCount < 100; drainCount += 1) {
       const result = await pollSharedTelegramUpdates(0);
@@ -310,6 +352,13 @@ async function telegramSyncOffset() {
     }
     await createBrokerSubscription(monitorSubscriberId(), { startAtEnd: true, reset: true });
   });
+}
+
+function monitorIsDraining() {
+  if (!monitorStarted || !monitorRunning || !monitorLastPollAt) return false;
+  const lastPollAt = Date.parse(monitorLastPollAt);
+  if (!Number.isFinite(lastPollAt)) return false;
+  return Date.now() - lastPollAt < monitorPollTimeoutSec() * 1000 + 10000;
 }
 
 async function telegramAsk(args) {
@@ -352,7 +401,8 @@ async function telegramAsk(args) {
       choices,
       requestId,
       subscriberId,
-      timeoutMs
+      timeoutMs,
+      responseAllowed: typeof args.responseAllowed === "function" ? args.responseAllowed : null
     });
     if (result.timeout) {
       await markChoicePrompt(chatId, messageId, "expired");
@@ -448,13 +498,17 @@ async function telegramApprovalRequest(args) {
       { label: "거부", value: "deny" }
     ],
     timeoutMs,
-    disableWebPagePreview: true
+    disableWebPagePreview: true,
+    responseAllowed: ({ chatId: responseChatId, userId }) => approvalUserAllowed(responseChatId, userId)
   });
   const result = JSON.parse(rawResult);
   if (result.timeout) {
     return [`approval: timeout`, `chat_id: ${chatId}`].join("\n");
   }
 
+  if (!approvalUserAllowed(result.chatId, result.userId)) {
+    return [`approval: unauthorized`, `chat_id: ${chatId}`].join("\n");
+  }
   const decision = parseApprovalDecision(result.selected_value || result.selected_label, "");
   if (!decision) return [`approval: unknown`, `chat_id: ${chatId}`].join("\n");
   return [
@@ -469,7 +523,7 @@ function startTelegramMonitor() {
   if (!telegramEnabled()) return;
   monitorStarted = true;
   relayHooks.start();
-  void telegramMonitorLoop();
+  void telegramMonitorLoop().catch(reportBackgroundFailure("telegramMonitorLoop"));
 }
 
 async function telegramMonitorLoop() {
@@ -696,7 +750,7 @@ async function sendBrokerControlActions(actions) {
 }
 
 function currentMonitorConsumer() {
-  return monitorConsumer(relayTargetCwd());
+  return monitorConsumer(relayTargetCwd(), relayTargetThreadId());
 }
 
 function monitorSubscriberId() {
@@ -732,6 +786,7 @@ async function inboxMessageFromTelegramUpdate(update, message) {
     date: message.date ? new Date(Number(message.date) * 1000).toISOString() : "",
     receivedAt: new Date().toISOString(),
     userId: message.from && message.from.id !== undefined ? String(message.from.id) : "",
+    chatType: String(message.chat.type || ""),
     from: displayName(message),
     attachments: attachment ? [attachment] : []
   };
@@ -847,20 +902,56 @@ function incomingDownloadFileName(media, filePath, update, message) {
 async function downloadTelegramFileContent(filePath, localPath, maxBytes) {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   const encodedPath = String(filePath).split("/").map(encodeURIComponent).join("/");
-  const response = await fetch(`https://api.telegram.org/file/bot${token}/${encodedPath}`);
+  const controller = new AbortController();
+  const timeoutMs = normalizeInteger(
+    process.env.CODEX_TELEGRAM_DOWNLOAD_TIMEOUT_MS,
+    120000,
+    1000,
+    15 * 60 * 1000
+  );
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  if (typeof timer.unref === "function") timer.unref();
+  let response;
+  try {
+    response = await fetch(`https://api.telegram.org/file/bot${token}/${encodedPath}`, {
+      signal: controller.signal
+    });
+  } catch (error) {
+    clearTimeout(timer);
+    if (controller.signal.aborted) {
+      throw new Error(`Telegram file download timed out after ${timeoutMs}ms`);
+    }
+    throw error;
+  }
   if (!response.ok) {
+    clearTimeout(timer);
     throw new Error(`Telegram file download failed: ${sanitize(response.statusText || response.status || "unknown error")}`);
   }
 
   const contentLength = Number(response.headers && response.headers.get && response.headers.get("content-length") || 0);
   if (contentLength > maxBytes) {
+    clearTimeout(timer);
     throw new Error(`Telegram file is too large to download: ${contentLength} bytes, max ${maxBytes} bytes`);
   }
 
-  await fs.promises.mkdir(path.dirname(localPath), { recursive: true });
-  if (!response.body) throw new Error("Telegram file download returned no body");
+  try {
+    await fs.promises.mkdir(path.dirname(localPath), { recursive: true, mode: 0o700 });
+  } catch (error) {
+    clearTimeout(timer);
+    throw error;
+  }
+  if (!response.body) {
+    clearTimeout(timer);
+    throw new Error("Telegram file download returned no body");
+  }
   const tempPath = `${localPath}.${process.pid}.${Date.now()}.tmp`;
-  const handle = await fs.promises.open(tempPath, "w");
+  let handle;
+  try {
+    handle = await fs.promises.open(tempPath, "wx", 0o600);
+  } catch (error) {
+    clearTimeout(timer);
+    throw error;
+  }
   let total = 0;
   try {
     for await (const chunk of response.body) {
@@ -874,13 +965,21 @@ async function downloadTelegramFileContent(filePath, localPath, maxBytes) {
   } catch (error) {
     await handle.close().catch(() => {});
     await fs.promises.unlink(tempPath).catch(() => {});
+    if (controller.signal.aborted) {
+      throw new Error(`Telegram file download timed out after ${timeoutMs}ms`);
+    }
     throw error;
+  } finally {
+    clearTimeout(timer);
   }
   await handle.close();
   await fs.promises.unlink(localPath).catch((error) => {
     if (error && error.code !== "ENOENT") throw error;
   });
   await fs.promises.rename(tempPath, localPath);
+  if (process.platform !== "win32") {
+    await fs.promises.chmod(localPath, 0o600).catch(() => {});
+  }
   return total;
 }
 
@@ -946,7 +1045,16 @@ function telegramAskText(args) {
   return text;
 }
 
-function waitForChoiceResponse({ chatId, messageId, question, choices, requestId, subscriberId, timeoutMs }) {
+function waitForChoiceResponse({
+  chatId,
+  messageId,
+  question,
+  choices,
+  requestId,
+  subscriberId,
+  timeoutMs,
+  responseAllowed
+}) {
   return new Promise((resolve) => {
     const waiter = {
       chatId: String(chatId),
@@ -955,6 +1063,7 @@ function waitForChoiceResponse({ chatId, messageId, question, choices, requestId
       choices,
       requestId,
       subscriberId,
+      responseAllowed,
       resolve,
       done: false,
       settling: false,
@@ -963,9 +1072,18 @@ function waitForChoiceResponse({ chatId, messageId, question, choices, requestId
     };
     choiceWaiters.add(waiter);
     armChoiceTimeout(waiter);
-    void notifyChoiceWaiters();
-    void pollChoiceUntilSettled(waiter);
+    // Both are fire-and-forget. notifyChoiceWaiters rethrows on a broker claim
+    // failure and the state lock can time out, and an unhandled rejection kills
+    // the whole MCP process mid-wait, so neither may escape unattached.
+    void notifyChoiceWaiters().catch(reportBackgroundFailure("notifyChoiceWaiters"));
+    void pollChoiceUntilSettled(waiter).catch(reportBackgroundFailure("pollChoiceUntilSettled"));
   });
+}
+
+function reportBackgroundFailure(label) {
+  return (error) => {
+    process.stderr.write(`codex-telegram-bridge-mcp: ${label} failed: ${sanitize(error && error.message || String(error))}\n`);
+  };
 }
 
 async function pollChoiceUntilSettled(waiter) {
@@ -1004,7 +1122,7 @@ async function waitForInboxMessage(chatId, timeoutMs) {
       reject(new Error(`Timed out waiting for Telegram reply after ${timeoutMs}ms`));
     }, timeoutMs);
     inboxWaiters.add(waiter);
-    void notifyInboxWaiters();
+    void notifyInboxWaiters().catch(reportBackgroundFailure("notifyInboxWaiters"));
   });
 }
 
@@ -1068,7 +1186,8 @@ async function takeMatchingChoiceMessage(waiter) {
 function isChoiceTextMessageForWaiter(message, waiter) {
   if (!message || message.source === "button" || message.choiceRequestId) return false;
   return message.chatId === waiter.chatId &&
-    Boolean(findChoiceByText(waiter.choices, message.text));
+    Boolean(findChoiceByText(waiter.choices, message.text)) &&
+    choiceResponseAllowed(waiter, message.chatId, message.userId);
 }
 
 async function processChoiceCallbacks(updates, targetWaiter) {
@@ -1091,6 +1210,18 @@ async function processChoiceCallbacks(updates, targetWaiter) {
 
     const chatId = callback.message && callback.message.chat && String(callback.message.chat.id);
     if (!allowedChatIds().has(chatId)) continue;
+    const userId = callback.from && callback.from.id;
+    if (!choiceResponseAllowed(waiter, chatId, userId)) {
+      const claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
+      if (!claimed) continue;
+      try {
+        await answerChoiceCallback(callback.id, "이 요청에 응답할 권한이 없습니다.");
+      } finally {
+        const completed = await completeBrokerUpdate(update.update_id, waiter.subscriberId);
+        if (!completed) throw new Error("Failed to complete an unauthorized Telegram choice callback.");
+      }
+      continue;
+    }
     if (!reserveChoiceWaiter(waiter)) continue;
     let claimed;
     try {
@@ -1135,6 +1266,15 @@ async function processChoiceTextUpdates(updates, waiter) {
     if (!chatId || chatId !== waiter.chatId || !allowedChatIds().has(chatId)) continue;
     const choice = findChoiceByText(waiter.choices, sanitize(text || ""));
     if (!choice) continue;
+    const userId = message.from && message.from.id;
+    if (!choiceResponseAllowed(waiter, chatId, userId)) {
+      const claimed = await claimBrokerUpdate(update.update_id, waiter.subscriberId);
+      if (claimed) {
+        const completed = await completeBrokerUpdate(update.update_id, waiter.subscriberId);
+        if (!completed) throw new Error("Failed to complete an unauthorized Telegram choice message.");
+      }
+      continue;
+    }
     if (!reserveChoiceWaiter(waiter)) continue;
     let claimed;
     try {
@@ -1173,6 +1313,18 @@ async function removeInboxUpdate(updateId) {
     state.inbox = next;
     writeTelegramState(state);
   });
+}
+
+function choiceResponseAllowed(waiter, chatId, userId) {
+  if (!waiter || typeof waiter.responseAllowed !== "function") return true;
+  try {
+    return waiter.responseAllowed({
+      chatId: String(chatId || ""),
+      userId: String(userId || "")
+    }) === true;
+  } catch {
+    return false;
+  }
 }
 
 function findChoiceWaiter(requestId, callback) {
@@ -1316,6 +1468,7 @@ module.exports = {
     incomingMediaFromMessage,
     isChoiceTextMessageForWaiter,
     isInboxReplyMessage,
-    pollAndProcessTelegramUpdates
+    pollAndProcessTelegramUpdates,
+    telegramRequestTimeoutMs
   }
 };
